@@ -1,0 +1,48 @@
+# Virtual Environment
+.venv/
+venv/
+env/
+ENV/
+backend/.venv/
+
+# Python Cache & Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+backend/**/__pycache__/
+backend/self_company/**/__pycache__/
+
+# Environment Variables & Secrets (Keep private)
+.env
+.env.local
+*.env
+backend/.env
+backend/.env.local
+
+# SQLite Database & Uploaded User Media
+*.sqlite3
+db.sqlite3
+backend/self_company/db.sqlite3
+backend/self_company/media/
+media/
+user_documents/
+
+# Node & Frontend Build Artifacts
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+dist-ssr/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor & OS Files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
