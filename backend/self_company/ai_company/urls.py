@@ -22,9 +22,13 @@ from .views import (
     ConversationListCreateView,
     ConversationDetailView,
     SendMessageView,
+    HealthCheckView,
 )
 
 urlpatterns = [
+    # Health check endpoint for Docker & monitoring
+    path('health/', HealthCheckView.as_view(), name='health_check'),
+
     # Google OAuth endpoints
     path('auth/google/url/', GoogleAuthInitView.as_view(), name='google_auth_init'),
     path('auth/google/callback/', GoogleCallbackView.as_view(), name='google_auth_callback'),

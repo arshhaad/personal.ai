@@ -74,10 +74,13 @@ WSGI_APPLICATION = 'self_company.wsgi.application'
 
 
 # Database
+DB_PATH = Path(os.getenv('DJANGO_DB_PATH', str(BASE_DIR / 'db.sqlite3')))
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': Path(os.getenv('DJANGO_DB_PATH', str(BASE_DIR / 'db.sqlite3'))),
+        'NAME': DB_PATH,
     }
 }
 
@@ -112,6 +115,7 @@ STATIC_URL = 'static/'
 # Media files (User uploaded documents)
 MEDIA_URL = '/media/'
 MEDIA_ROOT = Path(os.getenv('DJANGO_MEDIA_ROOT', str(BASE_DIR / 'media')))
+MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
@@ -122,6 +126,13 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
 ]
+
+cors_env = os.getenv('CORS_ALLOWED_ORIGINS')
+if cors_env:
+    for origin in cors_env.split(','):
+        cleaned_origin = origin.strip()
+        if cleaned_origin and cleaned_origin not in CORS_ALLOWED_ORIGINS:
+            CORS_ALLOWED_ORIGINS.append(cleaned_origin)
 CORS_ALLOW_CREDENTIALS = True
 
 # REST Framework Configuration

@@ -644,3 +644,16 @@ class SendMessageView(APIView):
             'assistant_message': MessageSerializer(assistant_message).data,
             'conversation_title': conversation.title,
         }, status=status.HTTP_201_CREATED)
+
+
+class HealthCheckView(APIView):
+    """
+    Lightweight healthcheck endpoint for Docker, load balancers, and monitoring.
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        return Response({
+            'status': 'healthy',
+            'service': 'personal-ai-backend',
+        }, status=status.HTTP_200_OK)

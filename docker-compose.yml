@@ -1,7 +1,9 @@
 services:
   backend:
+    container_name: personal-ai-backend
     build:
       context: ./backend
+    restart: unless-stopped
     command: sh -c "python manage.py migrate --noinput && python manage.py runserver 0.0.0.0:8000"
     env_file:
       - path: ./backend/.env
@@ -14,18 +16,29 @@ services:
     volumes:
       - backend_data:/data
       - backend_media:/media
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
 
   frontend:
+    container_name: personal-ai-frontend
     build:
       context: ./frontend
+    restart: unless-stopped
     command: npm run dev -- --host 0.0.0.0
     env_file:
       - path: ./frontend/.env
         required: false
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000
     ports:
       - "5173:5173"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
 volumes:
   backend_data:
