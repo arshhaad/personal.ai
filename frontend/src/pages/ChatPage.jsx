@@ -7,6 +7,7 @@ import Sidebar from '../components/chat/Sidebar';
 import ChatMessage from '../components/chat/ChatMessage';
 import ChatInput from '../components/chat/ChatInput';
 import ChatEmptyState from '../components/chat/ChatEmptyState';
+import InstallButton from '../components/pwa/InstallButton';
 import { Menu, Plus, Loader2, Sparkles, Sun, Moon, PanelLeft } from 'lucide-react';
 import { useTheme } from '../context/useTheme';
 import { useToast } from '../context/useToast';
@@ -391,6 +392,8 @@ export default function ChatPage() {
                 <span>New Chat</span>
               </button>
             )}
+
+            <InstallButton variant="header" label="Install" />
 
             <button
               type="button"

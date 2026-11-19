@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ProfileDropdown from './ProfileDropdown';
+import InstallButton from '../pwa/InstallButton';
 import {
   Brain,
   SquarePen,
@@ -126,6 +127,18 @@ export default function Sidebar({
           >
             {isCollapsed ? <ChevronRight size={17} /> : <ChevronLeft size={17} />}
           </button>
+
+          {mobileOpen && (
+            <button
+              type="button"
+              onClick={onCloseMobile}
+              className="btn-sidebar-mobile-close"
+              title="Close sidebar"
+              aria-label="Close sidebar"
+            >
+              <X size={18} />
+            </button>
+          )}
         </div>
 
         {/* New Chat Button (Pen/Write Icon) */}
@@ -312,8 +325,14 @@ export default function Sidebar({
           )}
         </div>
 
-        {/* User Profile Footer Section with Reusable Dropdown */}
+        {/* User Profile Footer Section with Reusable Dropdown & Install Option */}
         <div className="sidebar-footer">
+          <div className="sidebar-install-action">
+            <InstallButton
+              variant={isCollapsed ? 'sidebar-icon' : 'sidebar-full'}
+              label="Install Web App"
+            />
+          </div>
           <ProfileDropdown
             isCollapsed={isCollapsed}
             onSelect={() => {

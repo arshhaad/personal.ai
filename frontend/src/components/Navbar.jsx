@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
 import { Sparkles, LogOut, LogIn } from 'lucide-react';
+import InstallButton from './pwa/InstallButton';
 
 export default function Navbar() {
   const { user, isAuthenticated, logout } = useAuth();
@@ -18,6 +19,7 @@ export default function Navbar() {
         </Link>
 
         <nav className="nav-links">
+          <InstallButton variant="header" label="Install" />
           {isAuthenticated ? (
             <div className="nav-user-controls">
               <div className="user-mini-pill">

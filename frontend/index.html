@@ -3,8 +3,24 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="alternate icon" type="image/png" href="/icon-192.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, viewport-fit=cover" />
+    <meta name="description" content="Personal AI – Your Own Knowledge-Based AI Assistant with document grounding, custom memory, and real-time intelligence." />
+    
+    <!-- PWA & Mobile Web App Meta -->
+    <meta name="theme-color" content="#000000" id="theme-color-meta" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Personal AI" />
+    <meta name="application-name" content="Personal AI" />
+    <meta name="format-detection" content="telephone=no" />
+    
     <title>Personal AI – Your Own Knowledge-Based AI Assistant</title>
+    
     <script>
       (function() {
         try {
@@ -15,6 +31,10 @@
           }
           document.documentElement.setAttribute('data-theme', resolved);
           document.documentElement.style.colorScheme = resolved;
+          var meta = document.getElementById('theme-color-meta');
+          if (meta) {
+            meta.setAttribute('content', resolved === 'light' ? '#FFFFFF' : '#000000');
+          }
         } catch (e) {
           document.documentElement.setAttribute('data-theme', 'dark');
         }
