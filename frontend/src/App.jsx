@@ -15,6 +15,7 @@ import ProfilePage from './pages/ProfilePage';
 import PersonalizationPage from './pages/PersonalizationPage';
 import SettingsPage from './pages/SettingsPage';
 import PWAInstallGuideModal from './components/pwa/PWAInstallGuideModal';
+import ConnectGoogleDriveModal from './components/drive/ConnectGoogleDriveModal';
 import { Loader2 } from 'lucide-react';
 import './App.css';
 
@@ -37,6 +38,7 @@ function HomeRoute() {
 
 function AppLayout() {
   const location = useLocation();
+  const { isDriveModalOpen, closeDriveModal } = useAuth();
   const isChatRoute = location.pathname.startsWith('/chat');
   const isAuthAppRoute =
     location.pathname.startsWith('/chat') ||
@@ -108,6 +110,7 @@ function AppLayout() {
         </Routes>
       </main>
       <PWAInstallGuideModal />
+      <ConnectGoogleDriveModal isOpen={isDriveModalOpen} onClose={closeDriveModal} />
     </div>
   );
 }

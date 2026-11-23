@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../../context/useAuth';
 import ProfileDropdown from './ProfileDropdown';
 import InstallButton from '../pwa/InstallButton';
 import {
@@ -33,6 +34,7 @@ export default function Sidebar({
   docCount = 0,
 }) {
   const navigate = useNavigate();
+  const { appName } = useAuth();
   const [editingId, setEditingId] = useState(null);
   const [editTitle, setEditTitle] = useState('');
   const [deletingId, setDeletingId] = useState(null);
@@ -112,7 +114,7 @@ export default function Sidebar({
             </div>
             {!isCollapsed && (
               <div className="sidebar-brand-text">
-                <span className="brand-title">Personal AI</span>
+                <span className="brand-title">{appName || 'Personal AI'}</span>
                 <span className="brand-subtitle">Your Own Knowledge AI</span>
               </div>
             )}

@@ -141,8 +141,14 @@ class ProfileAndPersonalizationTests(TestCase):
         get_res = self.client.get('/api/personalization/preferences/')
         self.assertEqual(get_res.status_code, status.HTTP_200_OK)
         self.assertEqual(get_res.data['response_style'], 'Friendly')
+        self.assertEqual(get_res.data.get('custom_app_name'), '')
+
+        # Me endpoint returns default app_name
+        me_res = self.client.get('/api/auth/me/')
+        self.assertEqual(me_res.data.get('app_name'), 'Personal AI')
 
         patch_res = self.client.patch('/api/personalization/preferences/', {
+            'custom_app_name': "Arsh's AI",
             'response_style': 'Technical',
             'response_length': 'Detailed',
             'explanation_level': 'Advanced',
@@ -154,11 +160,16 @@ class ProfileAndPersonalizationTests(TestCase):
             'creativity': 0.3
         }, format='json')
         self.assertEqual(patch_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(patch_res.data['custom_app_name'], "Arsh's AI")
         self.assertEqual(patch_res.data['response_style'], 'Technical')
         self.assertEqual(patch_res.data['nickname'], 'arrsh')
         self.assertEqual(patch_res.data['occupation'], 'software engineer')
         self.assertEqual(patch_res.data['more_about_you'], 'Passionate about building knowledge-based AI systems.')
         self.assertEqual(patch_res.data['creativity'], 0.3)
+
+        # Me endpoint now reflects the customized app name
+        me_after_res = self.client.get('/api/auth/me/')
+        self.assertEqual(me_after_res.data.get('app_name'), "Arsh's AI")
 
     def test_personal_information_crud(self):
         # Create
@@ -430,3 +441,137 @@ class ConversationAndChatTests(TestCase):
         unrel_reply = unrel_res.data['assistant_message']['content']
         self.assertTrue("Sorry, I can't provide this" in unrel_reply)
         self.assertIn("You didn't mention any information about this", unrel_reply)
+
+
+class GoogleDriveIntegrationTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username='testdriver',
+            email='driver@example.com',
+            password='testpassword123'
+        )
+        refresh = RefreshToken.for_user(self.user)
+        self.token = str(refresh.access_token)
+        self.client.credentials(HTTP_AUTHORIZATION=f'Bearer {self.token}')
+
+    def test_drive_status_initial(self):
+        response = self.client.get('/api/drive/status/')
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data['is_connected'])
+        self.assertIn("Allow Personal Assistant AI to create and manage files", response.data['permission_text'])
+
+    def test_drive_connect_with_token(self):
+        response = self.client.post('/api/drive/connect/', {
+            'access_token': 'mock_access_token_12345',
+            'refresh_token': 'mock_refresh_token_abcde',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data['data']['is_connected'])
+        self.assertEqual(response.data['data']['drive_email'], 'driver@example.com')
+
+        # Verify status endpoint reflects connection
+        status_res = self.client.get('/api/drive/status/')
+        self.assertTrue(status_res.data['is_connected'])
+
+    def test_drive_disconnect(self):
+        # Connect first
+        self.client.post('/api/drive/connect/', {'access_token': 'mock_token'})
+        # Disconnect
+        response = self.client.post('/api/drive/disconnect/')
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data['data']['is_connected'])
+
+    def test_user_profile_includes_google_drive(self):
+        response = self.client.get('/api/auth/me/')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('google_drive', response.data)
+        self.assertFalse(response.data['google_drive']['is_connected'])
+
+    @patch('ai_company.views.get_or_create_app_folder')
+    @patch('ai_company.views.upload_file_to_drive')
+    def test_document_upload_stores_in_drive_folder(self, mock_upload, mock_folder):
+        mock_folder.return_value = 'folder_12345'
+        mock_upload.return_value = {
+            'id': 'drive_file_999',
+            'name': 'test_drive_doc.txt',
+            'webViewLink': 'https://drive.google.com/file/d/drive_file_999/view'
+        }
+
+        # Connect user's Google Drive
+        self.client.post('/api/drive/connect/', {'access_token': 'mock_token_abc'})
+
+        test_file = SimpleUploadedFile(
+            "test_drive_doc.txt",
+            b"My notes to be saved in Google Drive folder.",
+            content_type="text/plain"
+        )
+        res = self.client.post(
+            '/api/personalization/documents/upload/',
+            {'files': [test_file]},
+            format='multipart'
+        )
+        self.assertEqual(res.status_code, 201)
+
+        # Verify Google Drive folder and file storage were invoked
+        mock_folder.assert_called_once()
+        mock_upload.assert_called_once()
+
+        # Check document in database
+        doc = UploadedDocument.objects.get(user=self.user, original_name='test_drive_doc.txt')
+        self.assertEqual(doc.drive_file_id, 'drive_file_999')
+        self.assertTrue('https://drive.google.com' in doc.drive_web_link)
+        self.assertTrue(doc.uploaded_via_app)
+
+        # Check App Uploaded Documents endpoint in Settings
+        app_docs_res = self.client.get('/api/settings/app-documents/')
+        self.assertEqual(app_docs_res.status_code, 200)
+        self.assertEqual(app_docs_res.data['total_count'], 1)
+        self.assertEqual(app_docs_res.data['synced_drive_count'], 1)
+        self.assertEqual(app_docs_res.data['documents'][0]['drive_file_id'], 'drive_file_999')
+
+    @patch('ai_company.google_drive_service.delete_drive_file')
+    def test_app_uploaded_document_delete(self, mock_delete):
+        mock_delete.return_value = True
+
+        doc = UploadedDocument.objects.create(
+            user=self.user,
+            file=SimpleUploadedFile("delete_me.txt", b"temporary notes"),
+            original_name="delete_me.txt",
+            file_type="txt",
+            file_size=15,
+            status='completed',
+            drive_file_id='drive_to_delete_01',
+            uploaded_via_app=True,
+        )
+
+        # Delete via settings app documents endpoint
+        del_res = self.client.delete(f'/api/settings/app-documents/{doc.id}/')
+        self.assertEqual(del_res.status_code, 200)
+        self.assertFalse(UploadedDocument.objects.filter(pk=doc.id).exists())
+
+    def test_app_clear_uploaded_documents(self):
+        UploadedDocument.objects.create(
+            user=self.user,
+            file=SimpleUploadedFile("doc1.txt", b"notes 1"),
+            original_name="doc1.txt",
+            file_type="txt",
+            file_size=7,
+            status='completed',
+            uploaded_via_app=True,
+        )
+        UploadedDocument.objects.create(
+            user=self.user,
+            file=SimpleUploadedFile("doc2.txt", b"notes 2"),
+            original_name="doc2.txt",
+            file_type="txt",
+            file_size=7,
+            status='completed',
+            uploaded_via_app=True,
+        )
+
+        self.assertEqual(UploadedDocument.objects.filter(user=self.user, uploaded_via_app=True).count(), 2)
+        clear_res = self.client.post('/api/settings/app-documents/clear/')
+        self.assertEqual(clear_res.status_code, 200)
+        self.assertEqual(clear_res.data['deleted_count'], 2)
+        self.assertEqual(UploadedDocument.objects.filter(user=self.user, uploaded_via_app=True).count(), 0)

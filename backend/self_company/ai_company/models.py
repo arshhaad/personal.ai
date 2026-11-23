@@ -19,6 +19,28 @@ class UserProfile(models.Model):
         return f"{self.user.email or self.user.username}'s Profile"
 
 
+class GoogleDriveIntegration(models.Model):
+    PERMISSION_TEXT = "Allow Personal Assistant AI to create and manage files that you select or create with this application."
+
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='google_drive')
+    is_connected = models.BooleanField(default=False)
+    access_token = models.TextField(blank=True, default='')
+    refresh_token = models.TextField(blank=True, default='')
+    token_expiry = models.DateTimeField(blank=True, null=True)
+    scope = models.TextField(blank=True, default='https://www.googleapis.com/auth/drive.file')
+    drive_email = models.EmailField(blank=True, default='')
+    drive_display_name = models.CharField(max_length=255, blank=True, default='')
+    drive_folder_id = models.CharField(max_length=255, blank=True, default='')
+    drive_folder_name = models.CharField(max_length=255, blank=True, default='Personal AI Documents')
+    connected_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        status = "Connected" if self.is_connected else "Disconnected"
+        return f"{self.user.username}'s Google Drive ({status})"
+
+
 class UserAIPreferences(models.Model):
     STYLE_CHOICES = (
         ('Simple', 'Simple'),
@@ -49,6 +71,7 @@ class UserAIPreferences(models.Model):
     explanation_level = models.CharField(max_length=30, choices=LEVEL_CHOICES, default='Intermediate')
     answer_format = models.CharField(max_length=30, choices=FORMAT_CHOICES, default='Paragraphs')
     custom_instructions = models.TextField(blank=True, default='')
+    custom_app_name = models.CharField(max_length=150, blank=True, default='')
     nickname = models.CharField(max_length=150, blank=True, default='')
     occupation = models.CharField(max_length=150, blank=True, default='')
     more_about_you = models.TextField(blank=True, default='')
@@ -106,6 +129,9 @@ class UploadedDocument(models.Model):
     file_size = models.BigIntegerField()  # in bytes
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='uploaded')
     error_message = models.TextField(blank=True, null=True)
+    drive_file_id = models.CharField(max_length=255, blank=True, default='', db_index=True)
+    drive_web_link = models.URLField(max_length=1000, blank=True, default='')
+    uploaded_via_app = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -116,6 +142,18 @@ class UploadedDocument(models.Model):
         return f"{self.original_name} ({self.status}) - {self.user.username}"
 
     def delete(self, *args, **kwargs):
+        # Clean up Google Drive file if synced and user has active integration
+        if self.drive_file_id:
+            try:
+                from .google_drive_service import ensure_valid_drive_token, delete_drive_file
+                integration = getattr(self.user, 'google_drive', None)
+                if integration and integration.is_connected:
+                    token = ensure_valid_drive_token(integration)
+                    delete_drive_file(token, self.drive_file_id)
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"Could not delete file {self.drive_file_id} from Google Drive: {e}")
+
         # Clean up file on disk when document record is deleted
         if self.file and os.path.isfile(self.file.path):
             try:
@@ -208,6 +246,7 @@ def handle_user_creation_hooks(sender, instance, created, **kwargs):
         UserProfile.objects.get_or_create(user=instance)
         UserAIPreferences.objects.get_or_create(user=instance)
         ApplicationSettings.objects.get_or_create(user=instance)
+        GoogleDriveIntegration.objects.get_or_create(user=instance)
     else:
         if hasattr(instance, 'profile'):
             instance.profile.save()
@@ -217,3 +256,5 @@ def handle_user_creation_hooks(sender, instance, created, **kwargs):
             UserAIPreferences.objects.get_or_create(user=instance)
         if not hasattr(instance, 'app_settings'):
             ApplicationSettings.objects.get_or_create(user=instance)
+        if not hasattr(instance, 'google_drive'):
+            GoogleDriveIntegration.objects.get_or_create(user=instance)

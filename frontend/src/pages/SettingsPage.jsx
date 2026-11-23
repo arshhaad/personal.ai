@@ -1,9 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
 import { useTheme } from '../context/useTheme';
 import { useToast } from '../context/useToast';
 import { personalizationService } from '../services/personalizationService';
+import { googleDriveService } from '../services/googleDriveService';
+import ConnectGoogleDriveModal from '../components/drive/ConnectGoogleDriveModal';
 import {
   ArrowLeft,
   Settings as SettingsIcon,
@@ -16,13 +18,20 @@ import {
   AlertTriangle,
   Loader2,
   LogOut,
+  ExternalLink,
+  FileText,
+  RefreshCw,
+  FolderCheck,
 } from 'lucide-react';
 
 export default function SettingsPage() {
   const navigate = useNavigate();
-  const { user, logout } = useAuth();
+  const { user, logout, refreshUserData } = useAuth();
   const { theme, setTheme: setAppTheme } = useTheme();
   const { showToast } = useToast();
+
+  const [isDriveModalOpen, setIsDriveModalOpen] = useState(false);
+  const [disconnectingDrive, setDisconnectingDrive] = useState(false);
 
   const [settings, setSettings] = useState({
     theme: 'dark',
@@ -35,10 +44,16 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [exporting, setExporting] = useState(false);
 
+  // App Uploaded Documents & Drive Folder Sync State
+  const [appDocs, setAppDocs] = useState([]);
+  const [appDocsMeta, setAppDocsMeta] = useState(null);
+  const [loadingDocs, setLoadingDocs] = useState(true);
+  const [deletingDocId, setDeletingDocId] = useState(null);
+
   // Destructive Modals State
   const [confirmModal, setConfirmModal] = useState({
     isOpen: false,
-    type: null, // 'history', 'documents', 'account'
+    type: null, // 'history', 'documents', 'account', 'app_documents'
     title: '',
     message: '',
     confirmText: '',
@@ -48,6 +63,21 @@ export default function SettingsPage() {
   const showNotification = useCallback((msg, isError = false) => {
     showToast(msg, isError ? 'error' : 'success', 3000);
   }, [showToast]);
+
+  const loadAppDocuments = useCallback(async (showSpinner = false) => {
+    if (showSpinner) {
+      setLoadingDocs(true);
+    }
+    try {
+      const data = await googleDriveService.getAppUploadedDocuments();
+      setAppDocs(data.documents || []);
+      setAppDocsMeta(data);
+    } catch (err) {
+      console.error('Failed to load app documents:', err);
+    } finally {
+      setLoadingDocs(false);
+    }
+  }, []);
 
   useEffect(() => {
     let isMounted = true;
@@ -71,10 +101,61 @@ export default function SettingsPage() {
           setLoading(false);
         }
       });
+
+    googleDriveService.getAppUploadedDocuments()
+      .then((data) => {
+        if (isMounted) {
+          setAppDocs(data.documents || []);
+          setAppDocsMeta(data);
+        }
+      })
+      .catch((err) => {
+        if (isMounted) {
+          console.error('Failed to load app documents:', err);
+        }
+      })
+      .finally(() => {
+        if (isMounted) {
+          setLoadingDocs(false);
+        }
+      });
+
     return () => {
       isMounted = false;
     };
   }, [setAppTheme, showNotification]);
+
+  const formatBytes = (bytes) => {
+    if (!bytes || bytes === 0) return '0 B';
+    const k = 1024;
+    const sizes = ['B', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
+  };
+
+  const handleDeleteIndividualDoc = async (doc) => {
+    if (!window.confirm(`Are you sure you want to delete "${doc.original_name}"? This will remove it from the app knowledge base and your Google Drive folder.`)) {
+      return;
+    }
+    setDeletingDocId(doc.id);
+    try {
+      const res = await googleDriveService.deleteAppUploadedDocument(doc.id);
+      showNotification(res.message || 'Document deleted.');
+      setAppDocs((prev) => prev.filter((d) => d.id !== doc.id));
+      setAppDocsMeta((prev) => prev ? {
+        ...prev,
+        total_count: Math.max(0, prev.total_count - 1),
+        synced_drive_count: doc.drive_file_id
+          ? Math.max(0, prev.synced_drive_count - 1)
+          : prev.synced_drive_count,
+      } : prev);
+    } catch (err) {
+      console.error('Failed to delete doc:', err);
+      showNotification('Failed to delete document.', true);
+    } finally {
+      setDeletingDocId(null);
+    }
+  };
 
   const handleThemeChange = (newTheme) => {
     setAppTheme(newTheme);
@@ -126,13 +207,13 @@ export default function SettingsPage() {
         message: 'Are you sure you want to delete all your conversations? This action cannot be undone.',
         confirmText: 'Clear All Chats',
       });
-    } else if (type === 'documents') {
+    } else if (type === 'documents' || type === 'app_documents') {
       setConfirmModal({
         isOpen: true,
-        type: 'documents',
-        title: 'Delete All Uploaded Documents',
-        message: 'This will permanently remove all uploaded documents and their extracted knowledge text from your private knowledge base.',
-        confirmText: 'Delete All Documents',
+        type: 'app_documents',
+        title: 'Clear All App Uploaded Documents',
+        message: 'This will permanently delete all documents uploaded using this application from your knowledge base and remove them from your Google Drive folder. No other files in your Google Drive will be touched.',
+        confirmText: 'Clear App Documents',
       });
     } else if (type === 'account') {
       setConfirmModal({
@@ -151,9 +232,11 @@ export default function SettingsPage() {
       if (confirmModal.type === 'history') {
         const res = await personalizationService.clearHistory();
         showNotification(res.message || 'Chat history cleared.');
-      } else if (confirmModal.type === 'documents') {
-        const res = await personalizationService.clearDocuments();
-        showNotification(res.message || 'Uploaded documents deleted.');
+      } else if (confirmModal.type === 'documents' || confirmModal.type === 'app_documents') {
+        const res = await googleDriveService.clearAppUploadedDocuments();
+        showNotification(res.message || 'App uploaded documents cleared.');
+        setAppDocs([]);
+        setAppDocsMeta((prev) => prev ? { ...prev, total_count: 0, synced_drive_count: 0 } : prev);
       } else if (confirmModal.type === 'account') {
         await personalizationService.deleteAccount();
         logout();
@@ -165,6 +248,20 @@ export default function SettingsPage() {
       showNotification('Operation failed. Please try again.', true);
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  const handleDisconnectDrive = async () => {
+    if (!window.confirm('Disconnect Google Drive from Personal AI?')) return;
+    setDisconnectingDrive(true);
+    try {
+      await googleDriveService.disconnect();
+      await refreshUserData();
+      showToast('Google Drive disconnected.', 'success', 3000);
+    } catch {
+      showToast('Failed to disconnect Google Drive.', 'error', 3000);
+    } finally {
+      setDisconnectingDrive(false);
     }
   };
 
@@ -343,13 +440,48 @@ export default function SettingsPage() {
             <div className="settings-rows-list">
               <div className="setting-toggle-row">
                 <div className="toggle-text-meta">
-                  <span className="toggle-title">Identity Provider</span>
-                  <span className="toggle-desc">Authenticated securely using Google OAuth 2.0 with JWT access token protection.</span>
+                  <span className="toggle-title">Step 1: Google Identity</span>
+                  <span className="toggle-desc">Google verified identity and linked application account.</span>
                 </div>
                 <span className="tag-pill provider">
                   <Shield size={14} color="#10b981" />
                   <span>Google Account ({user?.email})</span>
                 </span>
+              </div>
+
+              <div className="setting-divider" />
+
+              <div className="setting-toggle-row">
+                <div className="toggle-text-meta">
+                  <span className="toggle-title">Step 2: Google Drive Connection</span>
+                  <span className="toggle-desc">&ldquo;Allow Personal Assistant AI to create and manage files that you select or create with this application.&rdquo;</span>
+                </div>
+                <div className="setting-action-controls">
+                  {user?.google_drive?.is_connected ? (
+                    <div className="drive-connected-group">
+                      <span className="tag-pill provider">
+                        <Shield size={14} color="#10b981" />
+                        <span>Connected ({user?.google_drive?.drive_email || user?.email})</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleDisconnectDrive}
+                        className="btn-danger-outline btn-sm"
+                        disabled={disconnectingDrive}
+                      >
+                        {disconnectingDrive ? 'Disconnecting...' : 'Disconnect'}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setIsDriveModalOpen(true)}
+                      className="btn-primary-action btn-sm"
+                    >
+                      Connect Google Drive
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="setting-divider" />
@@ -372,10 +504,163 @@ export default function SettingsPage() {
           </div>
 
           {/* ============================================================== */}
-          {/* SECTION E: DATA MANAGEMENT                                     */}
+          {/* SECTION E: APP UPLOADED DOCUMENTS & GOOGLE DRIVE STORAGE        */}
+          {/* ============================================================== */}
+          <div className="settings-body-card app-docs-settings-card">
+            <div className="settings-card-header-flex">
+              <div>
+                <h3 className="settings-card-title">E. App Uploaded Documents</h3>
+                <p className="settings-card-desc">
+                  Documents uploaded using this web application are organized and stored directly in your own Google Drive folder.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => loadAppDocuments(true)}
+                className="btn-refresh-docs"
+                title="Refresh documents list"
+                disabled={loadingDocs}
+              >
+                <RefreshCw size={15} className={loadingDocs ? 'animate-spin' : ''} />
+              </button>
+            </div>
+
+            {/* Storage Folder Info Banner */}
+            <div className="drive-folder-banner">
+              <div className="folder-banner-left">
+                <div className="folder-icon-circle">
+                  <FolderCheck size={20} />
+                </div>
+                <div className="folder-banner-text">
+                  <span className="folder-banner-title">
+                    Dedicated Folder: <strong>{appDocsMeta?.drive_folder_name || 'Personal AI Documents'}</strong>
+                  </span>
+                  <span className="folder-banner-sub">
+                    {user?.google_drive?.is_connected
+                      ? `Sync Active (${appDocsMeta?.synced_drive_count || 0} of ${appDocs.length} files stored in your Google Drive)`
+                      : 'Google Drive not connected. Connect Google Drive to automatically store uploaded files directly in your Drive.'}
+                  </span>
+                </div>
+              </div>
+              <div className="folder-banner-right">
+                {user?.google_drive?.is_connected ? (
+                  <span className="drive-connected-pill">
+                    <Shield size={13} color="#10b981" />
+                    <span>Drive Connected</span>
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setIsDriveModalOpen(true)}
+                    className="btn-connect-drive-sm"
+                  >
+                    Connect Drive
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Uploaded Documents List */}
+            <div className="app-docs-list-wrapper">
+              {loadingDocs ? (
+                <div className="app-docs-loading">
+                  <Loader2 size={22} className="animate-spin" />
+                  <span>Loading uploaded documents...</span>
+                </div>
+              ) : appDocs.length === 0 ? (
+                <div className="app-docs-empty-state">
+                  <FileText size={32} className="empty-docs-icon" />
+                  <h4>No documents uploaded yet</h4>
+                  <p>
+                    When you upload documents via Chat or Personalization, they are automatically stored in your Google Drive folder and listed here.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div className="app-docs-items-list">
+                    {appDocs.map((doc) => (
+                      <div key={doc.id} className="app-doc-row">
+                        <div className="doc-item-icon">
+                          <FileText size={18} />
+                        </div>
+                        <div className="doc-item-details">
+                          <span className="doc-item-name" title={doc.original_name}>
+                            {doc.original_name}
+                          </span>
+                          <div className="doc-item-meta">
+                            <span className="doc-badge-type">{doc.file_type?.toUpperCase()}</span>
+                            <span>•</span>
+                            <span>{formatBytes(doc.file_size)}</span>
+                            <span>•</span>
+                            <span>{new Date(doc.created_at).toLocaleDateString()}</span>
+                            {doc.drive_file_id ? (
+                              <span className="badge-drive-synced" title="Stored in user's Google Drive folder">
+                                In Google Drive
+                              </span>
+                            ) : (
+                              <span className="badge-local-only" title="Stored locally in knowledge base">
+                                Local Only
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="doc-item-actions">
+                          {doc.drive_web_link && (
+                            <a
+                              href={doc.drive_web_link}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="btn-doc-action view-drive"
+                              title="Open file in Google Drive"
+                            >
+                              <ExternalLink size={14} />
+                              <span>Drive</span>
+                            </a>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteIndividualDoc(doc)}
+                            disabled={deletingDocId === doc.id}
+                            className="btn-doc-action delete"
+                            title="Delete document and remove from Google Drive"
+                          >
+                            {deletingDocId === doc.id ? (
+                              <Loader2 size={14} className="animate-spin" />
+                            ) : (
+                              <Trash2 size={14} />
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Clear App Documents Action Bar */}
+                  <div className="app-docs-footer-bar">
+                    <span className="app-docs-count-text">
+                      Showing {appDocs.length} document{appDocs.length === 1 ? '' : 's'} uploaded via this application
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => openConfirm('app_documents')}
+                      className="btn-clear-app-docs"
+                    >
+                      <Trash2 size={14} />
+                      <span>Clear Uploaded Documents</span>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* ============================================================== */}
+          {/* SECTION F: DATA MANAGEMENT                                     */}
           {/* ============================================================== */}
           <div className="settings-body-card destructive-card">
-            <h3 className="settings-card-title danger-title">E. Data Management</h3>
+            <h3 className="settings-card-title danger-title">F. Data Management</h3>
             <p className="settings-card-desc">Export your personal data or perform irreversible account cleanup operations.</p>
 
             <div className="settings-rows-list">
@@ -488,6 +773,11 @@ export default function SettingsPage() {
           </div>
         </div>
       )}
+      {/* Step 2: Connect Google Drive Modal */}
+      <ConnectGoogleDriveModal
+        isOpen={isDriveModalOpen}
+        onClose={() => setIsDriveModalOpen(false)}
+      />
     </div>
   );
 }

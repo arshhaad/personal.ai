@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { useAuth } from '../../context/useAuth';
 import { Brain, User, Copy, Check, ThumbsUp, ThumbsDown, RotateCcw } from 'lucide-react';
 
 function CodeBlock({ language, children }) {
@@ -38,6 +39,7 @@ export default function ChatMessage({
   userName,
   onRegenerate,
 }) {
+  const { appName } = useAuth();
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState(null); // 'up' | 'down' | null
@@ -63,7 +65,7 @@ export default function ChatMessage({
       <div className="message-content-wrapper">
         {!isUser && (
           <div className="assistant-header-meta">
-            <span className="assistant-name">Personal AI</span>
+            <span className="assistant-name">{appName || 'Personal AI'}</span>
           </div>
         )}
 

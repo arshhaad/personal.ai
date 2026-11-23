@@ -2,6 +2,7 @@ from rest_framework import serializers
 from django.contrib.auth.models import User
 from .models import (
     UserProfile,
+    GoogleDriveIntegration,
     UserAIPreferences,
     PersonalInformation,
     UploadedDocument,
@@ -28,9 +29,29 @@ class UserProfileSerializer(serializers.ModelSerializer):
         read_only_fields = ['google_id', 'login_provider', 'created_at', 'updated_at']
 
 
+class GoogleDriveIntegrationSerializer(serializers.ModelSerializer):
+    permission_text = serializers.CharField(default=GoogleDriveIntegration.PERMISSION_TEXT, read_only=True)
+
+    class Meta:
+        model = GoogleDriveIntegration
+        fields = [
+            'is_connected',
+            'drive_email',
+            'drive_display_name',
+            'drive_folder_id',
+            'drive_folder_name',
+            'scope',
+            'permission_text',
+            'connected_at',
+        ]
+        read_only_fields = ['is_connected', 'drive_email', 'drive_display_name', 'drive_folder_id', 'drive_folder_name', 'scope', 'permission_text', 'connected_at']
+
+
 class UserSerializer(serializers.ModelSerializer):
     profile = UserProfileSerializer(read_only=True)
+    google_drive = serializers.SerializerMethodField()
     avatar_url = serializers.SerializerMethodField()
+    app_name = serializers.SerializerMethodField()
     date_joined = serializers.DateTimeField(read_only=True)
 
     class Meta:
@@ -42,7 +63,9 @@ class UserSerializer(serializers.ModelSerializer):
             'first_name',
             'last_name',
             'avatar_url',
+            'app_name',
             'profile',
+            'google_drive',
             'date_joined',
         ]
         read_only_fields = ['id', 'username', 'email', 'date_joined']
@@ -51,6 +74,30 @@ class UserSerializer(serializers.ModelSerializer):
         if hasattr(obj, 'profile') and obj.profile.avatar_url:
             return obj.profile.avatar_url
         return None
+
+    def get_app_name(self, obj):
+        if hasattr(obj, 'ai_preferences') and obj.ai_preferences.custom_app_name:
+            return obj.ai_preferences.custom_app_name
+        return 'Personal AI'
+
+    def get_google_drive(self, obj):
+        if hasattr(obj, 'google_drive'):
+            return {
+                'is_connected': obj.google_drive.is_connected,
+                'drive_email': obj.google_drive.drive_email,
+                'drive_display_name': obj.google_drive.drive_display_name,
+                'scope': obj.google_drive.scope,
+                'permission_text': GoogleDriveIntegration.PERMISSION_TEXT,
+                'connected_at': obj.google_drive.connected_at,
+            }
+        return {
+            'is_connected': False,
+            'drive_email': '',
+            'drive_display_name': '',
+            'scope': 'https://www.googleapis.com/auth/drive.file',
+            'permission_text': GoogleDriveIntegration.PERMISSION_TEXT,
+            'connected_at': None,
+        }
 
 
 class UserProfileUpdateSerializer(serializers.Serializer):
@@ -75,6 +122,24 @@ class GoogleAuthSerializer(serializers.Serializer):
         return attrs
 
 
+class GoogleDriveConnectSerializer(serializers.Serializer):
+    code = serializers.CharField(required=False, allow_blank=True)
+    access_token = serializers.CharField(required=False, allow_blank=True)
+    refresh_token = serializers.CharField(required=False, allow_blank=True)
+    redirect_uri = serializers.CharField(required=False, default='postmessage')
+
+    def validate(self, attrs):
+        if not attrs.get('code') and not attrs.get('access_token'):
+            raise serializers.ValidationError("Either 'code' or 'access_token' must be provided.")
+        return attrs
+
+
+class GoogleDriveImportSerializer(serializers.Serializer):
+    file_id = serializers.CharField(required=True)
+    name = serializers.CharField(required=True)
+    mime_type = serializers.CharField(required=False, allow_blank=True, default='')
+
+
 # --- AI Preferences ---
 class UserAIPreferencesSerializer(serializers.ModelSerializer):
     class Meta:
@@ -87,6 +152,7 @@ class UserAIPreferencesSerializer(serializers.ModelSerializer):
             'explanation_level',
             'answer_format',
             'custom_instructions',
+            'custom_app_name',
             'nickname',
             'occupation',
             'more_about_you',
@@ -136,6 +202,9 @@ class UploadedDocumentSerializer(serializers.ModelSerializer):
             'file_size',
             'status',
             'error_message',
+            'drive_file_id',
+            'drive_web_link',
+            'uploaded_via_app',
             'created_at',
             'updated_at',
             'file_url',
@@ -148,6 +217,9 @@ class UploadedDocumentSerializer(serializers.ModelSerializer):
             'file_size',
             'status',
             'error_message',
+            'drive_file_id',
+            'drive_web_link',
+            'uploaded_via_app',
             'created_at',
             'updated_at',
         ]

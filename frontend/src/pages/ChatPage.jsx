@@ -13,7 +13,7 @@ import { useTheme } from '../context/useTheme';
 import { useToast } from '../context/useToast';
 
 export default function ChatPage() {
-  const { user } = useAuth();
+  const { user, appName } = useAuth();
   const { isDark, toggleTheme } = useTheme();
   const { showToast } = useToast();
   const { conversationId } = useParams();
@@ -372,7 +372,7 @@ export default function ChatPage() {
 
             <div className="topbar-model-pill">
               <Sparkles size={14} className="sparkle-active" />
-              <span className="model-name">Personal AI</span>
+              <span className="model-name">{appName || 'Personal AI'}</span>
             </div>
 
             {activeConversation?.title && (
@@ -465,7 +465,7 @@ export default function ChatPage() {
                         <span></span>
                         <span></span>
                       </div>
-                      <span className="thinking-text">Personal AI is thinking...</span>
+                      <span className="thinking-text">{appName || 'Personal AI'} is thinking...</span>
                     </div>
                   </div>
                 </div>
@@ -483,7 +483,7 @@ export default function ChatPage() {
             onDocumentUploaded={refreshDocCount}
             placeholder={
               activeConversation
-                ? 'Message Personal AI...'
+                ? `Message ${appName || 'Personal AI'}...`
                 : 'Ask anything...'
             }
           />

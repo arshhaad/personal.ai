@@ -15,6 +15,7 @@ export function AuthProvider({ children }) {
   const [refreshToken, setRefreshToken] = useState(() => localStorage.getItem('refresh_token'));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [isDriveModalOpen, setIsDriveModalOpen] = useState(false);
 
   useEffect(() => {
     const initAuth = async () => {
@@ -67,6 +68,11 @@ export function AuthProvider({ children }) {
       setAccessToken(data.access);
       setRefreshToken(data.refresh);
       setUser(data.user);
+
+      if (!data.user?.google_drive?.is_connected) {
+        setIsDriveModalOpen(true);
+      }
+
       return data;
     } catch (err) {
       const message =
@@ -97,6 +103,11 @@ export function AuthProvider({ children }) {
       setAccessToken(data.access);
       setRefreshToken(data.refresh);
       setUser(data.user);
+
+      if (!data.user?.google_drive?.is_connected) {
+        setIsDriveModalOpen(true);
+      }
+
       return data;
     } catch (err) {
       const message =
@@ -134,11 +145,21 @@ export function AuthProvider({ children }) {
     }
   };
 
+  const openDriveModal = () => setIsDriveModalOpen(true);
+  const closeDriveModal = () => setIsDriveModalOpen(false);
+
+  const appName = user?.app_name || user?.ai_preferences?.custom_app_name || 'Personal AI';
+
   const value = {
     user,
+    appName,
     accessToken,
     refreshToken,
     isAuthenticated: !!accessToken && !!user,
+    isGoogleDriveConnected: Boolean(user?.google_drive?.is_connected),
+    isDriveModalOpen,
+    openDriveModal,
+    closeDriveModal,
     loading,
     error,
     loginWithGoogle,

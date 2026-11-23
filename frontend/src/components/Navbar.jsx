@@ -4,7 +4,7 @@ import { Sparkles, LogOut, LogIn } from 'lucide-react';
 import InstallButton from './pwa/InstallButton';
 
 export default function Navbar() {
-  const { user, isAuthenticated, logout } = useAuth();
+  const { user, isAuthenticated, logout, appName } = useAuth();
   const avatarUrl = user?.avatar_url || user?.profile?.avatar_url;
   const displayName = user?.first_name || user?.username || 'User';
 
@@ -15,7 +15,7 @@ export default function Navbar() {
           <div className="logo-icon-box">
             <Sparkles size={20} className="logo-sparkle" />
           </div>
-          <span className="logo-text">Personal AI</span>
+          <span className="logo-text">{appName || 'Personal AI'}</span>
         </Link>
 
         <nav className="nav-links">

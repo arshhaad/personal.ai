@@ -1,4 +1,8 @@
+import logging
+from datetime import timedelta
 from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from django.core.files.base import ContentFile
 from rest_framework import status
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -6,8 +10,11 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken, TokenError
 
+logger = logging.getLogger(__name__)
+
 from .models import (
     UserProfile,
+    GoogleDriveIntegration,
     UserAIPreferences,
     PersonalInformation,
     UploadedDocument,
@@ -18,6 +25,9 @@ from .models import (
 )
 from .serializers import (
     GoogleAuthSerializer,
+    GoogleDriveIntegrationSerializer,
+    GoogleDriveConnectSerializer,
+    GoogleDriveImportSerializer,
     UserSerializer,
     UserProfileUpdateSerializer,
     UserAIPreferencesSerializer,
@@ -35,6 +45,19 @@ from .services import (
     generate_google_auth_url,
     verify_and_extract_google_user,
     authenticate_google_user,
+)
+from .google_drive_service import (
+    exchange_drive_code,
+    ensure_valid_drive_token,
+    fetch_drive_user_info,
+    list_user_drive_files,
+    download_drive_file_content,
+    revoke_drive_token,
+    get_or_create_app_folder,
+    upload_file_to_drive,
+    delete_drive_file,
+    GOOGLE_DRIVE_SCOPE,
+    PERMISSION_DESCRIPTION,
 )
 from .ai_service import generate_ai_response
 from .document_service import validate_document_file, process_document
@@ -163,6 +186,176 @@ class LogoutView(APIView):
                 pass
 
         return Response({'message': 'Logged out successfully.'}, status=status.HTTP_200_OK)
+
+
+# ============================================================================
+# Google Drive Integration Views (Step 2: Connect Google Drive)
+# ============================================================================
+
+class GoogleDriveStatusView(APIView):
+    """
+    Check the current user's Google Drive connection status and permission details.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        integration, _ = GoogleDriveIntegration.objects.get_or_create(user=request.user)
+        serializer = GoogleDriveIntegrationSerializer(integration)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+class GoogleDriveConnectView(APIView):
+    """
+    Step 2: Connect Google Drive with the explicit scope:
+    'https://www.googleapis.com/auth/drive.file'
+    Permission request:
+    'Allow Personal Assistant AI to create and manage files that you select or create with this application.'
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = GoogleDriveConnectSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        code = serializer.validated_data.get('code')
+        access_token = serializer.validated_data.get('access_token')
+        refresh_token = serializer.validated_data.get('refresh_token', '')
+        redirect_uri = serializer.validated_data.get('redirect_uri', 'postmessage')
+
+        integration, _ = GoogleDriveIntegration.objects.get_or_create(user=request.user)
+
+        try:
+            if code:
+                token_data = exchange_drive_code(code, redirect_uri=redirect_uri)
+                access_token = token_data.get('access_token')
+                refresh_token = token_data.get('refresh_token', integration.refresh_token)
+                expires_in = token_data.get('expires_in', 3600)
+                scope = token_data.get('scope', GOOGLE_DRIVE_SCOPE)
+            else:
+                expires_in = 3600
+                scope = GOOGLE_DRIVE_SCOPE
+
+            user_info = fetch_drive_user_info(access_token) if access_token else {}
+
+            integration.is_connected = True
+            integration.access_token = access_token or ''
+            if refresh_token:
+                integration.refresh_token = refresh_token
+            integration.token_expiry = timezone.now() + timedelta(seconds=expires_in)
+            integration.scope = scope
+            integration.drive_email = user_info.get('email') or request.user.email
+            integration.drive_display_name = user_info.get('display_name') or request.user.get_full_name() or request.user.username
+            integration.connected_at = timezone.now()
+            integration.save()
+
+            return Response({
+                'message': 'Google Drive connected successfully.',
+                'permission': PERMISSION_DESCRIPTION,
+                'data': GoogleDriveIntegrationSerializer(integration).data
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({
+                'error': f'Failed to connect Google Drive: {str(e)}'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+
+class GoogleDriveDisconnectView(APIView):
+    """
+    Disconnect Google Drive integration and revoke token.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        integration, _ = GoogleDriveIntegration.objects.get_or_create(user=request.user)
+        if integration.access_token or integration.refresh_token:
+            revoke_drive_token(integration.refresh_token or integration.access_token)
+
+        integration.is_connected = False
+        integration.access_token = ''
+        integration.refresh_token = ''
+        integration.token_expiry = None
+        integration.connected_at = None
+        integration.save()
+
+        return Response({
+            'message': 'Google Drive disconnected successfully.',
+            'data': GoogleDriveIntegrationSerializer(integration).data
+        }, status=status.HTTP_200_OK)
+
+
+class GoogleDriveFilesView(APIView):
+    """
+    List files in Google Drive accessible to the user.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        integration, _ = GoogleDriveIntegration.objects.get_or_create(user=request.user)
+        if not integration.is_connected:
+            return Response(
+                {'error': 'Google Drive is not connected. Please connect Google Drive first.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            token = ensure_valid_drive_token(integration)
+            files = list_user_drive_files(token)
+            return Response({'files': files}, status=status.HTTP_200_OK)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class GoogleDriveImportView(APIView):
+    """
+    Import a file from Google Drive into Personal AI knowledge base.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = GoogleDriveImportSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        file_id = serializer.validated_data['file_id']
+        name = serializer.validated_data['name']
+        mime_type = serializer.validated_data.get('mime_type', '')
+
+        integration, _ = GoogleDriveIntegration.objects.get_or_create(user=request.user)
+        if not integration.is_connected:
+            return Response(
+                {'error': 'Google Drive is not connected.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            token = ensure_valid_drive_token(integration)
+            content_bytes, resolved_mime, ext = download_drive_file_content(token, file_id, mime_type)
+
+            final_name = name
+            if ext and not final_name.lower().endswith(ext):
+                final_name += ext
+
+            doc = UploadedDocument(
+                user=request.user,
+                original_filename=final_name,
+                file_size=len(content_bytes),
+                mime_type=resolved_mime or 'application/octet-stream',
+                status='uploaded'
+            )
+            doc.file.save(final_name, ContentFile(content_bytes), save=True)
+
+            # Process document text for AI knowledge base
+            process_document(doc)
+
+            return Response({
+                'message': f"Successfully imported '{final_name}' from Google Drive.",
+                'document': UploadedDocumentSerializer(doc).data
+            }, status=status.HTTP_201_CREATED)
+
+        except Exception as e:
+            return Response({'error': f'Failed to import file: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 
 
 # ============================================================================
@@ -312,14 +505,62 @@ class DocumentListUploadView(APIView):
         for file_obj in files:
             try:
                 ext = validate_document_file(file_obj)
+
+                # Cache file bytes before database persistence
+                file_obj.seek(0)
+                file_bytes = file_obj.read()
+                file_obj.seek(0)
+
                 doc = UploadedDocument.objects.create(
                     user=request.user,
                     file=file_obj,
                     original_name=file_obj.name,
                     file_type=ext,
                     file_size=file_obj.size,
-                    status='uploaded'
+                    status='uploaded',
+                    uploaded_via_app=True,
                 )
+
+                # Store in user's own Google Drive folder if Drive integration is connected
+                integration = getattr(request.user, 'google_drive', None)
+                if integration and integration.is_connected:
+                    try:
+                        token = ensure_valid_drive_token(integration)
+                        custom_app_name = ''
+                        if hasattr(request.user, 'ai_preferences'):
+                            custom_app_name = (request.user.ai_preferences.custom_app_name or '').strip()
+                        app_name = custom_app_name or 'Personal AI'
+                        folder_name = f"{app_name} Documents"
+
+                        folder_id = get_or_create_app_folder(token, folder_name)
+                        if folder_id:
+                            if integration.drive_folder_id != folder_id or integration.drive_folder_name != folder_name:
+                                integration.drive_folder_id = folder_id
+                                integration.drive_folder_name = folder_name
+                                integration.save(update_fields=['drive_folder_id', 'drive_folder_name'])
+
+                            mime_mapping = {
+                                'pdf': 'application/pdf',
+                                'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                                'txt': 'text/plain',
+                                'md': 'text/markdown',
+                            }
+                            upload_mime = mime_mapping.get(ext, 'application/octet-stream')
+
+                            drive_res = upload_file_to_drive(
+                                access_token=token,
+                                folder_id=folder_id,
+                                file_name=file_obj.name,
+                                file_bytes=file_bytes,
+                                mime_type=upload_mime
+                            )
+                            if drive_res and drive_res.get('id'):
+                                doc.drive_file_id = drive_res['id']
+                                doc.drive_web_link = drive_res.get('webViewLink', '')
+                                doc.save(update_fields=['drive_file_id', 'drive_web_link'])
+                    except Exception as drive_err:
+                        logger.warning(f"Failed to sync uploaded file '{file_obj.name}' to Google Drive: {drive_err}")
+
                 # Run extraction synchronously (or queue in background)
                 process_document(doc)
                 created_docs.append(doc)
@@ -520,9 +761,84 @@ class ClearDocumentsView(APIView):
     def post(self, request):
         docs = UploadedDocument.objects.filter(user=request.user)
         count = docs.count()
-        for doc in docs:
+        for doc in list(docs):
             doc.delete()
         return Response({'message': f'Successfully deleted {count} document(s).'}, status=status.HTTP_200_OK)
+
+
+class AppUploadedDocumentsView(APIView):
+    """
+    List user documents uploaded via this web application.
+    Shows whether each document is stored in the user's dedicated Google Drive folder.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        docs = UploadedDocument.objects.filter(user=request.user, uploaded_via_app=True)
+        integration = getattr(request.user, 'google_drive', None)
+        is_drive_connected = bool(integration and integration.is_connected)
+
+        custom_app_name = ''
+        if hasattr(request.user, 'ai_preferences'):
+            custom_app_name = (request.user.ai_preferences.custom_app_name or '').strip()
+        app_name = custom_app_name or 'Personal AI'
+        folder_name = integration.drive_folder_name if (integration and integration.drive_folder_name) else f"{app_name} Documents"
+
+        serializer = UploadedDocumentSerializer(docs, many=True)
+        return Response({
+            'documents': serializer.data,
+            'total_count': docs.count(),
+            'synced_drive_count': docs.exclude(drive_file_id='').count(),
+            'is_drive_connected': is_drive_connected,
+            'drive_folder_name': folder_name,
+            'drive_folder_id': integration.drive_folder_id if integration else '',
+            'app_name': app_name,
+        }, status=status.HTTP_200_OK)
+
+
+class AppUploadedDocumentDetailView(APIView):
+    """
+    Delete an individual document uploaded via this web application.
+    Removes it from the database, disk, and the user's Google Drive folder.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, pk):
+        doc = get_object_or_404(UploadedDocument, pk=pk, user=request.user, uploaded_via_app=True)
+        doc_name = doc.original_name
+        had_drive = bool(doc.drive_file_id)
+        doc.delete()  # Cleans up file on disk, database record, and Google Drive file
+        return Response({
+            'message': f"Deleted '{doc_name}' successfully" + (" and removed from your Google Drive folder." if had_drive else ".")
+        }, status=status.HTTP_200_OK)
+
+
+class AppClearUploadedDocumentsView(APIView):
+    """
+    Clear all documents uploaded via this web application.
+    Permanently deletes all app-uploaded documents from database and user's Google Drive folder.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        docs = UploadedDocument.objects.filter(user=request.user, uploaded_via_app=True)
+        count = docs.count()
+        drive_deleted_count = 0
+
+        for doc in list(docs):
+            if doc.drive_file_id:
+                drive_deleted_count += 1
+            doc.delete()
+
+        msg = f"Successfully cleared {count} uploaded document(s) from application."
+        if drive_deleted_count > 0:
+            msg += f" ({drive_deleted_count} removed from your Google Drive folder)"
+
+        return Response({
+            'message': msg,
+            'deleted_count': count,
+            'drive_deleted_count': drive_deleted_count,
+        }, status=status.HTTP_200_OK)
 
 
 class DeleteAccountView(APIView):

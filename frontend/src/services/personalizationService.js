@@ -140,6 +140,21 @@ export const personalizationService = {
     return response.data;
   },
 
+  async getAppUploadedDocuments() {
+    const response = await api.get('/api/settings/app-documents/');
+    return response.data;
+  },
+
+  async deleteAppUploadedDocument(id) {
+    const response = await api.delete(`/api/settings/app-documents/${id}/`);
+    return response.data;
+  },
+
+  async clearAppUploadedDocuments() {
+    const response = await api.post('/api/settings/app-documents/clear/');
+    return response.data;
+  },
+
   async deleteAccount() {
     const response = await api.post('/api/settings/delete-account/');
     return response.data;

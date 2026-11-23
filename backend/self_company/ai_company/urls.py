@@ -4,6 +4,11 @@ from .views import (
     GoogleAuthInitView,
     GoogleCallbackView,
     GoogleAuthView,
+    GoogleDriveStatusView,
+    GoogleDriveConnectView,
+    GoogleDriveDisconnectView,
+    GoogleDriveFilesView,
+    GoogleDriveImportView,
     LogoutView,
     UserProfileView,
     AIPreferencesView,
@@ -18,6 +23,9 @@ from .views import (
     DataExportView,
     ClearHistoryView,
     ClearDocumentsView,
+    AppUploadedDocumentsView,
+    AppUploadedDocumentDetailView,
+    AppClearUploadedDocumentsView,
     DeleteAccountView,
     ConversationListCreateView,
     ConversationDetailView,
@@ -35,6 +43,13 @@ urlpatterns = [
     path('auth/google/', GoogleAuthView.as_view(), name='google_auth'),
     path('auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('auth/logout/', LogoutView.as_view(), name='logout'),
+
+    # Step 2: Google Drive Integration endpoints
+    path('drive/status/', GoogleDriveStatusView.as_view(), name='google_drive_status'),
+    path('drive/connect/', GoogleDriveConnectView.as_view(), name='google_drive_connect'),
+    path('drive/disconnect/', GoogleDriveDisconnectView.as_view(), name='google_drive_disconnect'),
+    path('drive/files/', GoogleDriveFilesView.as_view(), name='google_drive_files'),
+    path('drive/import/', GoogleDriveImportView.as_view(), name='google_drive_import'),
 
     # User Profile endpoints
     path('users/me/', UserProfileView.as_view(), name='users_me'),
@@ -62,6 +77,9 @@ urlpatterns = [
     path('settings/export/', DataExportView.as_view(), name='settings_export'),
     path('settings/clear-history/', ClearHistoryView.as_view(), name='settings_clear_history'),
     path('settings/clear-documents/', ClearDocumentsView.as_view(), name='settings_clear_documents'),
+    path('settings/app-documents/', AppUploadedDocumentsView.as_view(), name='app_uploaded_documents'),
+    path('settings/app-documents/<int:pk>/', AppUploadedDocumentDetailView.as_view(), name='app_uploaded_document_detail'),
+    path('settings/app-documents/clear/', AppClearUploadedDocumentsView.as_view(), name='app_clear_uploaded_documents'),
     path('settings/delete-account/', DeleteAccountView.as_view(), name='settings_delete_account'),
 
     # Conversation Management endpoints

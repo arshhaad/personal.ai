@@ -1,7 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/useAuth';
 import { useToast } from '../context/useToast';
 import { personalizationService } from '../services/personalizationService';
+import { googleDriveService } from '../services/googleDriveService';
+import ConnectGoogleDriveModal from '../components/drive/ConnectGoogleDriveModal';
+import GoogleDriveFilePickerModal from '../components/drive/GoogleDriveFilePickerModal';
 import {
   ArrowLeft,
   UploadCloud,
@@ -17,8 +21,13 @@ import {
 
 export default function PersonalizationPage() {
   const navigate = useNavigate();
+  const { user, refreshUserData } = useAuth();
+  const [isDrivePickerOpen, setIsDrivePickerOpen] = useState(false);
+  const [isDriveConnectModalOpen, setIsDriveConnectModalOpen] = useState(false);
+  const [disconnectingDrive, setDisconnectingDrive] = useState(false);
 
   // Form Fields State
+  const [customAppName, setCustomAppName] = useState('Personal AI');
   const [preferredName, setPreferredName] = useState('');
   const [occupation, setOccupation] = useState('');
   const [customInstructions, setCustomInstructions] = useState('');
@@ -26,6 +35,7 @@ export default function PersonalizationPage() {
 
   // Initial State for Cancel / Dirty Checking
   const [initialData, setInitialData] = useState({
+    customAppName: 'Personal AI',
     preferredName: '',
     occupation: '',
     customInstructions: '',
@@ -49,6 +59,20 @@ export default function PersonalizationPage() {
     triggerToast(message, isError ? 'error' : 'success', 3000);
   }, [triggerToast]);
 
+  const handleDisconnectDrive = async () => {
+    if (!window.confirm('Are you sure you want to disconnect Google Drive?')) return;
+    setDisconnectingDrive(true);
+    try {
+      await googleDriveService.disconnect();
+      await refreshUserData();
+      showToast('Google Drive disconnected.');
+    } catch {
+      showToast('Failed to disconnect Google Drive.', true);
+    } finally {
+      setDisconnectingDrive(false);
+    }
+  };
+
   // Load All User Data on Mount
   useEffect(() => {
     let isMounted = true;
@@ -63,17 +87,20 @@ export default function PersonalizationPage() {
         ]);
 
         if (isMounted) {
+          const loadedAppName = prefsData.custom_app_name || 'Personal AI';
           const loadedName = prefsData.nickname || profileData.profile?.preferred_name || profileData.preferred_name || '';
           const loadedOccupation = prefsData.occupation || '';
           const loadedInstructions = prefsData.custom_instructions || '';
           const loadedMoreAboutYou = prefsData.more_about_you || '';
 
+          setCustomAppName(loadedAppName);
           setPreferredName(loadedName);
           setOccupation(loadedOccupation);
           setCustomInstructions(loadedInstructions);
           setMoreAboutYou(loadedMoreAboutYou);
 
           setInitialData({
+            customAppName: loadedAppName,
             preferredName: loadedName,
             occupation: loadedOccupation,
             customInstructions: loadedInstructions,
@@ -104,8 +131,10 @@ export default function PersonalizationPage() {
     if (e) e.preventDefault();
     setSaving(true);
     try {
+      const trimmedAppName = customAppName.trim() || 'Personal AI';
       await Promise.all([
         personalizationService.updateAIPreferences({
+          custom_app_name: trimmedAppName,
           nickname: preferredName,
           occupation: occupation,
           custom_instructions: customInstructions,
@@ -116,12 +145,18 @@ export default function PersonalizationPage() {
         }),
       ]);
 
+      setCustomAppName(trimmedAppName);
       setInitialData({
+        customAppName: trimmedAppName,
         preferredName,
         occupation,
         customInstructions,
         moreAboutYou,
       });
+
+      if (refreshUserData) {
+        await refreshUserData();
+      }
 
       showToast('Personalization preferences saved successfully!');
     } catch (err) {
@@ -134,6 +169,7 @@ export default function PersonalizationPage() {
 
   // Cancel / Reset to Initial Loaded Values
   const handleCancel = () => {
+    setCustomAppName(initialData.customAppName);
     setPreferredName(initialData.preferredName);
     setOccupation(initialData.occupation);
     setCustomInstructions(initialData.customInstructions);
@@ -246,10 +282,13 @@ export default function PersonalizationPage() {
   };
 
   const hasUnsavedChanges =
+    customAppName !== initialData.customAppName ||
     preferredName !== initialData.preferredName ||
     occupation !== initialData.occupation ||
     customInstructions !== initialData.customInstructions ||
     moreAboutYou !== initialData.moreAboutYou;
+
+  const candidateName = preferredName.trim() || user?.first_name || user?.username || '';
 
   if (loading) {
     return (
@@ -384,6 +423,69 @@ export default function PersonalizationPage() {
             </div>
           </div>
 
+          {/* Google Drive Integration Card */}
+          <div className="google-drive-integration-box">
+            <div className="drive-box-left">
+              <div className="drive-box-logo">
+                <svg viewBox="0 0 87.3 78" width="22" height="22">
+                  <path d="m6.6 66.85 3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8H0c0 1.55.4 3.1 1.2 4.5z" fill="#0066da"/>
+                  <path d="M43.65 25 29.9 1.2c-1.35.8-2.5 1.9-3.3 3.3l-25.4 44A9.06 9.06 0 0 0 0 53h27.5z" fill="#00ac47"/>
+                  <path d="M73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5H59.8l5.85 10.15z" fill="#ea4335"/>
+                  <path d="M43.65 25 57.4 1.2C56.05.4 54.5 0 52.9 0H34.4c-1.6 0-3.15.45-4.5 1.2z" fill="#00832d"/>
+                  <path d="M59.8 53H87.3c0-1.55-.4-3.1-1.2-4.5l-25.4-44c-.8-1.4-1.95-2.5-3.3-3.3L43.65 25z" fill="#ffba00"/>
+                  <path d="M73.55 76.8c1.6 0 3.15-.45 4.5-1.2l-18.25-31.6-16.15 28 4.2 4.8z" fill="#2684fc"/>
+                </svg>
+              </div>
+              <div className="drive-box-details">
+                <div className="drive-box-title-row">
+                  <span className="drive-box-heading">Google Drive Sync</span>
+                  {user?.google_drive?.is_connected ? (
+                    <span className="drive-status-badge connected">Connected</span>
+                  ) : (
+                    <span className="drive-status-badge">Step 2 Pending</span>
+                  )}
+                </div>
+                <p className="drive-box-description">
+                  {user?.google_drive?.is_connected
+                    ? `Connected as ${user?.google_drive?.drive_email || user?.email}. Import your Google Drive documents directly into your knowledge base.`
+                    : 'Allow Personal Assistant AI to create and manage files that you select or create with this application.'}
+                </p>
+              </div>
+            </div>
+
+            <div className="drive-box-actions">
+              {user?.google_drive?.is_connected ? (
+                <>
+                  <button
+                    type="button"
+                    className="btn-drive-import-cta"
+                    onClick={() => setIsDrivePickerOpen(true)}
+                  >
+                    <FolderOpen size={15} />
+                    <span>Import from Drive</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-drive-disconnect-link"
+                    onClick={handleDisconnectDrive}
+                    disabled={disconnectingDrive}
+                  >
+                    {disconnectingDrive ? 'Disconnecting...' : 'Disconnect'}
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="btn-drive-connect-cta"
+                  onClick={() => setIsDriveConnectModalOpen(true)}
+                >
+                  <FolderOpen size={15} />
+                  <span>Connect Google Drive</span>
+                </button>
+              )}
+            </div>
+          </div>
+
           {/* Uploaded Documents List in Section 1 */}
           <div className="uploaded-documents-list">
             <div className="documents-list-header">
@@ -475,13 +577,70 @@ export default function PersonalizationPage() {
         </section>
 
         {/* ============================================================== */}
-        {/* SECTION 2: WHAT SHOULD YOUR AI CALL YOU?                       */}
+        {/* SECTION 2: ASSISTANT & APP NAME                                */}
+        {/* ============================================================== */}
+        <section className="personalization-section" id="section-app-name">
+          <div className="section-title-wrap">
+            <h2 className="section-heading">Assistant & App Name</h2>
+            <p className="section-subheading">
+              Customize the name of your personal AI assistant. This name will appear across the sidebar, header, and chats.
+            </p>
+          </div>
+
+          <div className="app-name-preference-box">
+            <div className="form-group">
+              <label className="form-label">App & Assistant Name</label>
+              <input
+                type="text"
+                value={customAppName}
+                onChange={(e) => setCustomAppName(e.target.value)}
+                placeholder="Personal AI"
+                className="instruction-text-input"
+                maxLength={50}
+              />
+            </div>
+
+            <div className="app-name-presets-wrapper">
+              <span className="app-name-presets-label">Quick suggestions:</span>
+              <div className="app-name-presets">
+                <button
+                  type="button"
+                  className={`btn-app-preset ${customAppName === 'Personal AI' ? 'active' : ''}`}
+                  onClick={() => setCustomAppName('Personal AI')}
+                >
+                  Personal AI (Default)
+                </button>
+                {candidateName && (
+                  <>
+                    <button
+                      type="button"
+                      className={`btn-app-preset ${customAppName === `${candidateName}'s AI` ? 'active' : ''}`}
+                      onClick={() => setCustomAppName(`${candidateName}'s AI`)}
+                    >
+                      {candidateName}&apos;s AI
+                    </button>
+                    <button
+                      type="button"
+                      className={`btn-app-preset ${customAppName === `${candidateName}'s Assistant` ? 'active' : ''}`}
+                      onClick={() => setCustomAppName(`${candidateName}'s Assistant`)}
+                    >
+                      {candidateName}&apos;s Assistant
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* ============================================================== */}
+        {/* SECTION 3: WHAT SHOULD YOUR AI CALL YOU?                       */}
         {/* ============================================================== */}
         <section className="personalization-section" id="section-preferred-name">
           <div className="section-title-wrap">
             <h2 className="section-heading">What Should Your AI Call You?</h2>
             <p className="section-subheading">
-              Set your preferred nickname and occupation so Personal AI knows how to address you.
+              Set your preferred nickname and occupation so {customAppName || 'Personal AI'} knows how to address you.
             </p>
           </div>
 
@@ -671,6 +830,21 @@ Examples:
           </div>
         </div>
       )}
+      {/* Google Drive Modals */}
+      <ConnectGoogleDriveModal
+        isOpen={isDriveConnectModalOpen}
+        onClose={() => setIsDriveConnectModalOpen(false)}
+      />
+
+      <GoogleDriveFilePickerModal
+        isOpen={isDrivePickerOpen}
+        onClose={() => setIsDrivePickerOpen(false)}
+        onFileImported={(newDoc) => {
+          if (newDoc) {
+            setDocuments((prev) => [newDoc, ...prev.filter((d) => d.id !== newDoc.id)]);
+          }
+        }}
+      />
     </div>
   );
 }

@@ -39,6 +39,7 @@ def build_system_context(user) -> str:
     answer_format = "Bullet Points"
     explanation_level = "Intermediate"
     response_length = "Medium"
+    app_name = "Personal AI"
 
     try:
         if hasattr(user, 'profile') and user.profile:
@@ -49,6 +50,8 @@ def build_system_context(user) -> str:
     try:
         if hasattr(user, 'ai_preferences') and user.ai_preferences:
             prefs = user.ai_preferences
+            if prefs.custom_app_name and prefs.custom_app_name.strip():
+                app_name = prefs.custom_app_name.strip()
             if prefs.nickname:
                 preferred_name = prefs.nickname
             occupation = prefs.occupation or ""
@@ -119,7 +122,7 @@ def build_system_context(user) -> str:
         logger.warning(f"Failed to fetch uploaded documents: {e}")
 
     system_prompt = (
-        f"You are **Personal AI**, the private knowledge-based AI assistant for {user_name}.\n"
+        f"You are **{app_name}**, the private knowledge-based AI assistant for {user_name}.\n"
         f"You are strictly bounded to {user_name}'s uploaded documents and personal profile information provided below.\n\n"
         f"STRICT KNOWLEDGE BOUNDARY DIRECTIVES:\n"
         f"1. You must ONLY answer questions using the facts, text, and data directly mentioned in the USER PRIVATE KNOWLEDGE BASE (UPLOADED DOCUMENTS) or USER PERSONAL INFORMATION below.\n"
@@ -293,12 +296,19 @@ def local_rag_fallback(user, user_message: str) -> str:
     topic = extract_topic(user_message)
 
     # Friendly greetings check
+    app_name = "Personal AI"
+    try:
+        if hasattr(user, 'ai_preferences') and user.ai_preferences and user.ai_preferences.custom_app_name:
+            app_name = user.ai_preferences.custom_app_name.strip()
+    except Exception:
+        pass
+
     greetings = {"hi", "hello", "hey", "good morning", "good evening", "good afternoon", "who are you", "what can you do"}
     if query in greetings or any(query.startswith(g) for g in ["hi ", "hello ", "hey "]):
         return (
-            "Hello! I am your Personal AI assistant. "
-            "I can answer questions based on your uploaded documents and personal profile. "
-            "Ask me anything about your documents or knowledge base!"
+            f"Hello! I am your {app_name} assistant. "
+            f"I can answer questions based on your uploaded documents and personal profile. "
+            f"Ask me anything about your documents or knowledge base!"
         )
 
     docs = UploadedDocument.objects.filter(user=user, status='completed').select_related('extracted_content')
@@ -379,8 +389,14 @@ def generate_ai_response(conversation, user_message: str, message_history=None) 
     if not docs_exist and not info_exist:
         if is_greeting:
             name = user.first_name or user.username
+            fallback_app_name = "Personal AI"
+            try:
+                if hasattr(user, 'ai_preferences') and user.ai_preferences and user.ai_preferences.custom_app_name:
+                    fallback_app_name = user.ai_preferences.custom_app_name.strip()
+            except Exception:
+                pass
             return (
-                f"Hello {name}! I am your Personal AI assistant. "
+                f"Hello {name}! I am your {fallback_app_name} assistant. "
                 f"You haven't uploaded any documents or added personal information yet. "
                 f"Please upload your documents in the Knowledge section so I can assist you with them!"
             )
