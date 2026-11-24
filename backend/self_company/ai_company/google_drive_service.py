@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from datetime import timedelta
 import requests
 from django.conf import settings
@@ -9,6 +10,75 @@ logger = logging.getLogger(__name__)
 
 GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
 PERMISSION_DESCRIPTION = 'Allow Personal Assistant AI to create and manage files that you select or create with this application.'
+
+
+class GoogleDriveAPIError(Exception):
+    def __init__(self, message, is_api_disabled=False, enable_url=None, project_id=None, status_code=400):
+        super().__init__(message)
+        self.message = message
+        self.is_api_disabled = is_api_disabled
+        self.enable_url = enable_url
+        self.project_id = project_id
+        self.status_code = status_code
+
+    def to_dict(self):
+        data = {'error': self.message}
+        if self.is_api_disabled:
+            data['is_api_disabled'] = True
+            data['enable_url'] = self.enable_url or 'https://console.developers.google.com/apis/api/drive.googleapis.com/overview'
+            if self.project_id:
+                data['project_id'] = self.project_id
+        return data
+
+
+def parse_google_drive_error(response, default_msg="Failed to communicate with Google Drive."):
+    """
+    Parses Google Drive API error responses and extracts clean user-friendly messages
+    and API enablement URLs if the Google Drive API is not enabled in Google Cloud Console.
+    """
+    try:
+        data = response.json()
+        error_info = data.get('error', {})
+        msg = error_info.get('message', '')
+        details = error_info.get('details', [])
+
+        is_disabled = False
+        enable_url = None
+        project_id = None
+
+        # Check for SERVICE_DISABLED or accessNotConfigured
+        for item in details:
+            if item.get('reason') == 'SERVICE_DISABLED':
+                is_disabled = True
+                metadata = item.get('metadata', {})
+                consumer = metadata.get('consumer', '')
+                if 'projects/' in consumer:
+                    project_id = consumer.split('projects/')[-1]
+                break
+
+        for err in error_info.get('errors', []):
+            if err.get('reason') == 'accessNotConfigured':
+                is_disabled = True
+                break
+
+        if 'has not been used in project' in msg or 'it is disabled' in msg or is_disabled:
+            match = re.search(r'(https://console\.developers\.google\.com/apis/api/drive\.googleapis\.com/overview\S*)', msg)
+            if match:
+                enable_url = match.group(1).rstrip('.,)"\'')
+            elif project_id:
+                enable_url = f"https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project={project_id}"
+            else:
+                enable_url = "https://console.developers.google.com/apis/library/drive.googleapis.com"
+
+            clean_msg = "Google Drive API is not enabled in your Google Cloud Console project. Please enable it in Google Cloud Console to allow Google Drive access."
+            return GoogleDriveAPIError(clean_msg, is_api_disabled=True, enable_url=enable_url, project_id=project_id, status_code=403)
+
+        if msg:
+            return GoogleDriveAPIError(msg, status_code=response.status_code)
+    except Exception:
+        pass
+
+    return GoogleDriveAPIError(default_msg, status_code=response.status_code)
 
 
 def exchange_drive_code(code, redirect_uri='postmessage'):
@@ -104,7 +174,7 @@ def list_user_drive_files(access_token, page_size=30):
     response = requests.get(files_url, headers=headers, params=params, timeout=12)
     if not response.ok:
         logger.error(f"Failed to list Google Drive files: {response.text}")
-        raise ValueError(f"Failed to fetch files from Google Drive: {response.text}")
+        raise parse_google_drive_error(response, "Failed to fetch files from Google Drive.")
     return response.json().get('files', [])
 
 
@@ -120,14 +190,14 @@ def download_drive_file_content(access_token, file_id, mime_type=None):
         export_url = f"https://www.googleapis.com/drive/v3/files/{file_id}/export?mimeType=application/pdf"
         response = requests.get(export_url, headers=headers, timeout=30)
         if not response.ok:
-            raise ValueError(f"Failed to export Google Document: {response.text}")
+            raise parse_google_drive_error(response, "Failed to export Google Document.")
         return response.content, 'application/pdf', '.pdf'
 
     elif mime_type == 'application/vnd.google-apps.spreadsheet':
         export_url = f"https://www.googleapis.com/drive/v3/files/{file_id}/export?mimeType=application/pdf"
         response = requests.get(export_url, headers=headers, timeout=30)
         if not response.ok:
-            raise ValueError(f"Failed to export Google Spreadsheet: {response.text}")
+            raise parse_google_drive_error(response, "Failed to export Google Spreadsheet.")
         return response.content, 'application/pdf', '.pdf'
 
     else:
@@ -135,7 +205,7 @@ def download_drive_file_content(access_token, file_id, mime_type=None):
         download_url = f"https://www.googleapis.com/drive/v3/files/{file_id}?alt=media"
         response = requests.get(download_url, headers=headers, timeout=30)
         if not response.ok:
-            raise ValueError(f"Failed to download Google Drive file: {response.text}")
+            raise parse_google_drive_error(response, "Failed to download Google Drive file.")
         return response.content, mime_type, ''
 
 
@@ -175,6 +245,12 @@ def get_or_create_app_folder(access_token, folder_name="Personal AI Documents"):
             files = res.json().get('files', [])
             if files:
                 return files[0]['id']
+        else:
+            err = parse_google_drive_error(res)
+            if err.is_api_disabled:
+                raise err
+    except GoogleDriveAPIError:
+        raise
     except Exception as e:
         logger.warning(f"Failed to query existing Drive folder '{folder_name}': {e}")
 
@@ -187,7 +263,7 @@ def get_or_create_app_folder(access_token, folder_name="Personal AI Documents"):
     create_res = requests.post(files_url, headers=headers, json=create_body, timeout=12)
     if not create_res.ok:
         logger.error(f"Failed to create Google Drive folder '{folder_name}': {create_res.text}")
-        raise ValueError(f"Could not create Google Drive folder: {create_res.text}")
+        raise parse_google_drive_error(create_res, f"Could not create Google Drive folder: {create_res.text}")
 
     return create_res.json().get('id')
 
@@ -220,7 +296,7 @@ def upload_file_to_drive(access_token, folder_id, file_name, file_bytes, mime_ty
     response = requests.post(upload_url, headers=headers, files=files, timeout=40)
     if not response.ok:
         logger.error(f"Failed to upload file '{file_name}' to Google Drive: {response.text}")
-        raise ValueError(f"Google Drive upload failed: {response.text}")
+        raise parse_google_drive_error(response, f"Google Drive upload failed: {response.text}")
 
     return response.json()
 

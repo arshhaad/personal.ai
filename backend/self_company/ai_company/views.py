@@ -56,6 +56,7 @@ from .google_drive_service import (
     get_or_create_app_folder,
     upload_file_to_drive,
     delete_drive_file,
+    GoogleDriveAPIError,
     GOOGLE_DRIVE_SCOPE,
     PERMISSION_DESCRIPTION,
 )
@@ -303,6 +304,8 @@ class GoogleDriveFilesView(APIView):
             token = ensure_valid_drive_token(integration)
             files = list_user_drive_files(token)
             return Response({'files': files}, status=status.HTTP_200_OK)
+        except GoogleDriveAPIError as gde:
+            return Response(gde.to_dict(), status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -339,9 +342,9 @@ class GoogleDriveImportView(APIView):
 
             doc = UploadedDocument(
                 user=request.user,
-                original_filename=final_name,
+                original_name=final_name,
                 file_size=len(content_bytes),
-                mime_type=resolved_mime or 'application/octet-stream',
+                file_type=ext.replace('.', '') if ext else 'txt',
                 status='uploaded'
             )
             doc.file.save(final_name, ContentFile(content_bytes), save=True)
@@ -354,6 +357,8 @@ class GoogleDriveImportView(APIView):
                 'document': UploadedDocumentSerializer(doc).data
             }, status=status.HTTP_201_CREATED)
 
+        except GoogleDriveAPIError as gde:
+            return Response(gde.to_dict(), status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({'error': f'Failed to import file: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 

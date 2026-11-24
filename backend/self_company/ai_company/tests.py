@@ -575,3 +575,20 @@ class GoogleDriveIntegrationTests(TestCase):
         self.assertEqual(clear_res.status_code, 200)
         self.assertEqual(clear_res.data['deleted_count'], 2)
         self.assertEqual(UploadedDocument.objects.filter(user=self.user, uploaded_via_app=True).count(), 0)
+
+    @patch('ai_company.views.list_user_drive_files')
+    def test_drive_api_disabled_error_handling(self, mock_list):
+        from ai_company.google_drive_service import GoogleDriveAPIError
+        mock_list.side_effect = GoogleDriveAPIError(
+            "Google Drive API is not enabled in your Google Cloud Console project.",
+            is_api_disabled=True,
+            enable_url="https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=285108715643",
+            project_id="285108715643"
+        )
+
+        self.client.post('/api/drive/connect/', {'access_token': 'mock_token_abc'})
+        res = self.client.get('/api/drive/files/')
+        self.assertEqual(res.status_code, 400)
+        self.assertTrue(res.data['is_api_disabled'])
+        self.assertEqual(res.data['project_id'], '285108715643')
+        self.assertIn('console.developers.google.com', res.data['enable_url'])

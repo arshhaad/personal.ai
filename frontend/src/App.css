@@ -7189,6 +7189,153 @@ html, body {
   color: #A1A1AA;
 }
 
+/* Google Drive API Disabled Warning Card in File Picker Modal */
+.drive-api-enable-card {
+  width: 100%;
+  max-width: 520px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 12px;
+  padding: 22px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.api-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.api-warning-badge {
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  background: rgba(245, 158, 11, 0.15);
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.api-card-title {
+  margin: 0 0 4px 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #FBBF24;
+}
+
+.api-card-subtitle {
+  margin: 0;
+  font-size: 13px;
+  color: #D4D4D8;
+  line-height: 1.5;
+}
+
+.api-card-action-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: #141419;
+  border: 1px solid #23232E;
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.api-step-instruction {
+  margin: 0;
+  font-size: 12.5px;
+  color: #A1A1AA;
+}
+
+.btn-enable-drive-api {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: #2563EB;
+  color: #FFFFFF;
+  padding: 10px 18px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  font-weight: 600;
+  text-decoration: none;
+  transition: all 0.18s ease;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.3);
+}
+
+.btn-enable-drive-api:hover {
+  background: #1D4ED8;
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.45);
+}
+
+.api-note-text {
+  font-size: 11.5px;
+  color: #8E8E93;
+  line-height: 1.45;
+}
+
+.api-card-footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.btn-retry-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #27273A;
+  border: 1px solid #3E3E56;
+  color: #FFFFFF;
+  padding: 7px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-retry-primary:hover {
+  background: #34344E;
+  border-color: #555577;
+}
+
+/* Light mode overrides for API enable card */
+[data-theme="light"] .drive-api-enable-card {
+  background: #FFFBEB;
+  border-color: #FDE68A;
+}
+
+[data-theme="light"] .api-card-title {
+  color: #B45309;
+}
+
+[data-theme="light"] .api-card-subtitle {
+  color: #4B5563;
+}
+
+[data-theme="light"] .api-card-action-box {
+  background: #FFFFFF;
+  border-color: #FDE68A;
+}
+
+[data-theme="light"] .api-step-instruction {
+  color: #4B5563;
+}
+
+[data-theme="light"] .btn-retry-primary {
+  background: #F3F4F6;
+  border-color: #D1D5DB;
+  color: #111827;
+}
+
+[data-theme="light"] .btn-retry-primary:hover {
+  background: #E5E7EB;
+}
+
 .drive-picker-empty h3 {
   margin: 0;
   font-size: 16px;

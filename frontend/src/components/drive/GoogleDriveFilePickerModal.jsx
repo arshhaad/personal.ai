@@ -25,23 +25,54 @@ export default function GoogleDriveFilePickerModal({
   const [importingId, setImportingId] = useState(null);
   const [importedIds, setImportedIds] = useState(new Set());
   const [errorMessage, setErrorMessage] = useState(null);
+  const [apiDisabledInfo, setApiDisabledInfo] = useState(null);
+
+  const processError = useCallback((err) => {
+    const data = err.response?.data;
+    if (data?.is_api_disabled) {
+      setApiDisabledInfo({
+        enableUrl: data.enable_url || 'https://console.developers.google.com/apis/api/drive.googleapis.com/overview',
+        projectId: data.project_id || '',
+      });
+      setErrorMessage(data.error || 'Google Drive API is disabled in your Google Cloud Console project.');
+      return;
+    }
+
+    const rawMsg = data?.error || err.message || 'Could not load Google Drive files. Please try reconnecting Google Drive.';
+    if (
+      typeof rawMsg === 'string' &&
+      (rawMsg.includes('has not been used in project') ||
+        rawMsg.includes('SERVICE_DISABLED') ||
+        rawMsg.includes('accessNotConfigured') ||
+        rawMsg.includes('drive.googleapis.com/overview'))
+    ) {
+      const match = rawMsg.match(/(https:\/\/console\.developers\.google\.com\/apis\/api\/drive\.googleapis\.com\/overview\S*)/);
+      const url = match ? match[1].replace(/[.,)"']+$/, '') : 'https://console.developers.google.com/apis/api/drive.googleapis.com/overview';
+      setApiDisabledInfo({
+        enableUrl: url,
+        projectId: '285108715643',
+      });
+      setErrorMessage('Google Drive API is disabled in your Google Cloud Console project. Please enable it in Google Cloud Console.');
+      return;
+    }
+
+    setApiDisabledInfo(null);
+    setErrorMessage(rawMsg);
+  }, []);
 
   const loadDriveFiles = useCallback(async () => {
     setLoading(true);
     setErrorMessage(null);
+    setApiDisabledInfo(null);
     try {
       const data = await googleDriveService.getFiles();
       setFiles(data.files || []);
     } catch (err) {
-      const msg =
-        err.response?.data?.error ||
-        err.message ||
-        'Could not load Google Drive files. Please try reconnecting Google Drive.';
-      setErrorMessage(msg);
+      processError(err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [processError]);
 
   useEffect(() => {
     let isMounted = true;
@@ -57,11 +88,7 @@ export default function GoogleDriveFilePickerModal({
       })
       .catch((err) => {
         if (isMounted) {
-          const msg =
-            err.response?.data?.error ||
-            err.message ||
-            'Could not load Google Drive files. Please try reconnecting Google Drive.';
-          setErrorMessage(msg);
+          processError(err);
           setLoading(false);
         }
       });
@@ -69,7 +96,7 @@ export default function GoogleDriveFilePickerModal({
     return () => {
       isMounted = false;
     };
-  }, [isOpen]);
+  }, [isOpen, processError]);
 
   const handleImport = async (file) => {
     setImportingId(file.id);
@@ -172,11 +199,54 @@ export default function GoogleDriveFilePickerModal({
             </div>
           ) : errorMessage ? (
             <div className="drive-picker-error">
-              <AlertCircle size={32} className="error-icon" />
-              <p>{errorMessage}</p>
-              <button type="button" className="btn-retry" onClick={loadDriveFiles}>
-                Try Again
-              </button>
+              {apiDisabledInfo ? (
+                <div className="drive-api-enable-card">
+                  <div className="api-card-header">
+                    <div className="api-warning-badge">
+                      <AlertCircle size={24} color="#f59e0b" />
+                    </div>
+                    <div>
+                      <h3 className="api-card-title">Google Drive API Not Enabled</h3>
+                      <p className="api-card-subtitle">
+                        Your Google Cloud Console project requires the <strong>Google Drive API</strong> to be enabled to allow file importing and folder synchronization.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="api-card-action-box">
+                    <p className="api-step-instruction">
+                      Click the button below to open Google Cloud Console and click <strong>Enable</strong>:
+                    </p>
+                    <a
+                      href={apiDisabledInfo.enableUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="btn-enable-drive-api"
+                    >
+                      <ExternalLink size={16} />
+                      <span>Enable Google Drive API in Cloud Console</span>
+                    </a>
+                    <span className="api-note-text">
+                      After clicking <strong>Enable</strong> in Google Cloud Console, wait 1–2 minutes for Google to activate it, then click <strong>Try Again</strong>.
+                    </span>
+                  </div>
+
+                  <div className="api-card-footer">
+                    <button type="button" className="btn-retry-primary" onClick={loadDriveFiles}>
+                      <RefreshCw size={14} />
+                      <span>Try Again</span>
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <AlertCircle size={32} className="error-icon" />
+                  <p>{errorMessage}</p>
+                  <button type="button" className="btn-retry" onClick={loadDriveFiles}>
+                    Try Again
+                  </button>
+                </>
+              )}
             </div>
           ) : filteredFiles.length === 0 ? (
             <div className="drive-picker-empty">
