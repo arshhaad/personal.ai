@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import { AuthProvider } from './context/AuthContext';
@@ -5,6 +6,7 @@ import { ThemeProvider } from './context/ThemeContext';
 import { ToastProvider } from './context/ToastContext';
 import { PWAInstallProvider } from './context/PWAInstallContext';
 import { useAuth } from './context/useAuth';
+import { initAudioUnlock, playNotificationChord } from './utils/notificationSound';
 import Navbar from './components/Navbar';
 import ProtectedRoute from './components/auth/ProtectedRoute';
 import LoginPage from './pages/LoginPage';
@@ -14,6 +16,8 @@ import ChatPage from './pages/ChatPage';
 import ProfilePage from './pages/ProfilePage';
 import PersonalizationPage from './pages/PersonalizationPage';
 import SettingsPage from './pages/SettingsPage';
+import IntegrationsPage from './pages/IntegrationsPage';
+import RemindersPage from './pages/RemindersPage';
 import PWAInstallGuideModal from './components/pwa/PWAInstallGuideModal';
 import ConnectGoogleDriveModal from './components/drive/ConnectGoogleDriveModal';
 import { Loader2 } from 'lucide-react';
@@ -44,7 +48,10 @@ function AppLayout() {
     location.pathname.startsWith('/chat') ||
     location.pathname === '/personalization' ||
     location.pathname === '/profile' ||
-    location.pathname === '/settings';
+    location.pathname === '/settings' ||
+    location.pathname === '/plugins' ||
+    location.pathname === '/integrations' ||
+    location.pathname === '/reminders';
   const isLandingRoute =
     location.pathname === '/' ||
     location.pathname === '/login' ||
@@ -99,6 +106,30 @@ function AppLayout() {
             }
           />
           <Route
+            path="/plugins"
+            element={
+              <ProtectedRoute>
+                <IntegrationsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/integrations"
+            element={
+              <ProtectedRoute>
+                <IntegrationsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/reminders"
+            element={
+              <ProtectedRoute>
+                <RemindersPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
             path="/dashboard"
             element={
               <ProtectedRoute>
@@ -116,6 +147,21 @@ function AppLayout() {
 }
 
 function App() {
+  useEffect(() => {
+    initAudioUnlock();
+
+    if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+      const handleSwMessage = (event) => {
+        if (event.data?.type === 'PLAY_NOTIFICATION_CHORD') {
+          playNotificationChord();
+        }
+      };
+      navigator.serviceWorker.addEventListener('message', handleSwMessage);
+      return () => navigator.serviceWorker.removeEventListener('message', handleSwMessage);
+    }
+    return undefined;
+  }, []);
+
   return (
     <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
       <AuthProvider>

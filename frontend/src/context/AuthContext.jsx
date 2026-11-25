@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { AuthContext } from './AuthContextDefinition';
 import { authService } from '../services/authService';
+import { updateAppNotificationBadge } from '../utils/appBadge';
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => {
@@ -38,6 +39,7 @@ export function AuthProvider({ children }) {
       setUser(null);
       setAccessToken(null);
       setRefreshToken(null);
+      updateAppNotificationBadge(0);
     };
 
     window.addEventListener('auth:logout', handleExternalLogout);
@@ -130,6 +132,7 @@ export function AuthProvider({ children }) {
       setUser(null);
       setAccessToken(null);
       setRefreshToken(null);
+      updateAppNotificationBadge(0);
       setLoading(false);
     }
   };

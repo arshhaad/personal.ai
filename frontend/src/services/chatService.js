@@ -50,10 +50,20 @@ export const chatService = {
    * Send a message to a conversation and get the AI response
    * @param {number|string} conversationId
    * @param {string} content
+   * @param {Object} [options] { useWebSearch?: boolean }
    */
-  async sendMessage(conversationId, content) {
+  async sendMessage(conversationId, content, options = {}) {
     const response = await api.post(`/api/conversations/${conversationId}/messages/`, {
       content,
+      use_web_search: Boolean(options.useWebSearch),
+    });
+    return response.data;
+  },
+
+  async editMessage(conversationId, messageId, content, options = {}) {
+    const response = await api.patch(`/api/conversations/${conversationId}/messages/${messageId}/`, {
+      content,
+      use_web_search: Boolean(options.useWebSearch),
     });
     return response.data;
   },

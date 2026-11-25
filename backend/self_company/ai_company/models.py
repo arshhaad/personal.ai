@@ -41,6 +41,49 @@ class GoogleDriveIntegration(models.Model):
         return f"{self.user.username}'s Google Drive ({status})"
 
 
+class GoogleCalendarIntegration(models.Model):
+    PERMISSION_TEXT = "Allow Personal Assistant AI to view and manage events on your Google Calendar."
+
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='google_calendar')
+    is_connected = models.BooleanField(default=False)
+    access_token = models.TextField(blank=True, default='')
+    refresh_token = models.TextField(blank=True, default='')
+    token_expiry = models.DateTimeField(blank=True, null=True)
+    scope = models.TextField(blank=True, default='https://www.googleapis.com/auth/calendar.events')
+    calendar_email = models.EmailField(blank=True, default='')
+    calendar_display_name = models.CharField(max_length=255, blank=True, default='')
+    connected_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        status = "Connected" if self.is_connected else "Disconnected"
+        return f"{self.user.username}'s Google Calendar ({status})"
+
+
+class GmailIntegration(models.Model):
+    PERMISSION_TEXT = "Allow Personal Assistant AI to read your recent emails and send messages on your behalf."
+
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='gmail_integration')
+    is_connected = models.BooleanField(default=False)
+    access_token = models.TextField(blank=True, default='')
+    refresh_token = models.TextField(blank=True, default='')
+    token_expiry = models.DateTimeField(blank=True, null=True)
+    scope = models.TextField(
+        blank=True,
+        default='https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send',
+    )
+    gmail_address = models.EmailField(blank=True, default='')
+    gmail_display_name = models.CharField(max_length=255, blank=True, default='')
+    connected_at = models.DateTimeField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        status = "Connected" if self.is_connected else "Disconnected"
+        return f"{self.user.username}'s Gmail ({status})"
+
+
 class UserAIPreferences(models.Model):
     STYLE_CHOICES = (
         ('Simple', 'Simple'),
@@ -201,6 +244,10 @@ class ApplicationSettings(models.Model):
     theme = models.CharField(max_length=20, choices=THEME_CHOICES, default='system')
     enter_to_send = models.BooleanField(default=True)
     notifications_enabled = models.BooleanField(default=False)
+    web_search_enabled = models.BooleanField(default=True)
+    voice_enabled = models.BooleanField(default=True)
+    voice_auto_speak = models.BooleanField(default=False)
+    voice_rate = models.FloatField(default=1.0)
     display_mode = models.CharField(max_length=20, default='comfortable')
     memory_enabled = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -208,6 +255,89 @@ class ApplicationSettings(models.Model):
 
     def __str__(self):
         return f"{self.user.username}'s Application Settings"
+
+
+class Notification(models.Model):
+    CATEGORY_CHOICES = (
+        ('document', 'Document'),
+        ('calendar', 'Calendar'),
+        ('email', 'Email'),
+        ('reminder', 'Reminder'),
+        ('integration', 'Integration'),
+        ('system', 'System'),
+    )
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='notifications')
+    title = models.CharField(max_length=200)
+    message = models.TextField()
+    category = models.CharField(max_length=30, choices=CATEGORY_CHOICES, default='system')
+    is_read = models.BooleanField(default=False)
+    action_url = models.CharField(max_length=255, blank=True, default='')
+    external_ref = models.CharField(max_length=255, blank=True, default='', db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"[{self.category.upper()}] {self.title} - {self.user.username}"
+
+
+class Reminder(models.Model):
+    RECURRENCE_CHOICES = (
+        ('none', 'One-time'),
+        ('daily', 'Daily'),
+        ('weekly', 'Weekly'),
+        ('monthly', 'Monthly'),
+    )
+    STATUS_CHOICES = (
+        ('pending', 'Pending'),
+        ('completed', 'Completed'),
+    )
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='reminders')
+    title = models.CharField(max_length=200)
+    message = models.TextField(blank=True, default='')
+    scheduled_at = models.DateTimeField(db_index=True)
+    timezone_name = models.CharField(max_length=64, default='UTC')
+    recurrence = models.CharField(max_length=20, choices=RECURRENCE_CHOICES, default='none')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', db_index=True)
+    notified_for_at = models.DateTimeField(null=True, blank=True)
+    last_notified_at = models.DateTimeField(null=True, blank=True)
+    snoozed_until = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['scheduled_at', '-created_at']
+
+    def __str__(self):
+        return f"Reminder: {self.title} @ {self.scheduled_at} ({self.user.username})"
+
+
+class ReminderHistory(models.Model):
+    EVENT_TYPE_CHOICES = (
+        ('triggered', 'Triggered'),
+        ('snoozed', 'Snoozed'),
+        ('completed', 'Completed'),
+    )
+
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='reminder_history')
+    reminder = models.ForeignKey(Reminder, null=True, blank=True, on_delete=models.SET_NULL, related_name='history_entries')
+    title = models.CharField(max_length=200)
+    message = models.TextField(blank=True, default='')
+    scheduled_at = models.DateTimeField()
+    timezone_name = models.CharField(max_length=64, default='UTC')
+    recurrence = models.CharField(max_length=20, default='none')
+    event_type = models.CharField(max_length=20, choices=EVENT_TYPE_CHOICES, default='completed')
+    recorded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-recorded_at']
+
+    def __str__(self):
+        return f"[{self.event_type.upper()}] {self.title} ({self.user.username})"
 
 
 class Conversation(models.Model):
@@ -247,6 +377,8 @@ def handle_user_creation_hooks(sender, instance, created, **kwargs):
         UserAIPreferences.objects.get_or_create(user=instance)
         ApplicationSettings.objects.get_or_create(user=instance)
         GoogleDriveIntegration.objects.get_or_create(user=instance)
+        GoogleCalendarIntegration.objects.get_or_create(user=instance)
+        GmailIntegration.objects.get_or_create(user=instance)
     else:
         if hasattr(instance, 'profile'):
             instance.profile.save()
@@ -258,3 +390,7 @@ def handle_user_creation_hooks(sender, instance, created, **kwargs):
             ApplicationSettings.objects.get_or_create(user=instance)
         if not hasattr(instance, 'google_drive'):
             GoogleDriveIntegration.objects.get_or_create(user=instance)
+        if not hasattr(instance, 'google_calendar'):
+            GoogleCalendarIntegration.objects.get_or_create(user=instance)
+        if not hasattr(instance, 'gmail_integration'):
+            GmailIntegration.objects.get_or_create(user=instance)

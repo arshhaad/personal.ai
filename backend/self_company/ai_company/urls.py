@@ -30,6 +30,28 @@ from .views import (
     ConversationListCreateView,
     ConversationDetailView,
     SendMessageView,
+    MessageDetailView,
+    GoogleWorkspaceConnectView,
+    GoogleCalendarStatusView,
+    GoogleCalendarConnectView,
+    GoogleCalendarDisconnectView,
+    GoogleCalendarEventsView,
+    GoogleCalendarEventDetailView,
+    GmailStatusView,
+    GmailConnectView,
+    GmailDisconnectView,
+    GmailMessagesView,
+    GmailSendView,
+    WebSearchView,
+    NotificationListView,
+    NotificationDetailView,
+    NotificationReadAllView,
+    NotificationClearView,
+    ReminderListCreateView,
+    ReminderDetailView,
+    ReminderSnoozeView,
+    ReminderCompleteView,
+    ReminderHistoryClearView,
     HealthCheckView,
 )
 
@@ -86,4 +108,37 @@ urlpatterns = [
     path('conversations/', ConversationListCreateView.as_view(), name='conversations_list_create'),
     path('conversations/<int:pk>/', ConversationDetailView.as_view(), name='conversation_detail'),
     path('conversations/<int:pk>/messages/', SendMessageView.as_view(), name='send_message'),
+    path('conversations/<int:pk>/messages/<int:message_id>/', MessageDetailView.as_view(), name='message_detail'),
+
+    # Advanced Integrations: Unified Workspace + Google Calendar
+    path('integrations/workspace/connect/', GoogleWorkspaceConnectView.as_view(), name='workspace_connect'),
+    path('integrations/calendar/status/', GoogleCalendarStatusView.as_view(), name='calendar_status'),
+    path('integrations/calendar/connect/', GoogleCalendarConnectView.as_view(), name='calendar_connect'),
+    path('integrations/calendar/disconnect/', GoogleCalendarDisconnectView.as_view(), name='calendar_disconnect'),
+    path('integrations/calendar/events/', GoogleCalendarEventsView.as_view(), name='calendar_events'),
+    path('integrations/calendar/events/<str:event_id>/', GoogleCalendarEventDetailView.as_view(), name='calendar_event_detail'),
+
+    # Advanced Integrations: Gmail
+    path('integrations/gmail/status/', GmailStatusView.as_view(), name='gmail_status'),
+    path('integrations/gmail/connect/', GmailConnectView.as_view(), name='gmail_connect'),
+    path('integrations/gmail/disconnect/', GmailDisconnectView.as_view(), name='gmail_disconnect'),
+    path('integrations/gmail/messages/', GmailMessagesView.as_view(), name='gmail_messages'),
+    path('integrations/gmail/send/', GmailSendView.as_view(), name='gmail_send'),
+
+    # Advanced Integrations: Web Search
+    path('integrations/web-search/', WebSearchView.as_view(), name='web_search'),
+
+    # Notifications Center
+    path('notifications/', NotificationListView.as_view(), name='notifications_list'),
+    path('notifications/read-all/', NotificationReadAllView.as_view(), name='notifications_read_all'),
+    path('notifications/clear/', NotificationClearView.as_view(), name='notifications_clear'),
+    path('notifications/<int:pk>/read/', NotificationDetailView.as_view(), name='notification_read'),
+    path('notifications/<int:pk>/', NotificationDetailView.as_view(), name='notification_detail'),
+
+    # Reminder System
+    path('reminders/', ReminderListCreateView.as_view(), name='reminders_list_create'),
+    path('reminders/history/clear/', ReminderHistoryClearView.as_view(), name='reminders_history_clear'),
+    path('reminders/<int:pk>/', ReminderDetailView.as_view(), name='reminder_detail'),
+    path('reminders/<int:pk>/snooze/', ReminderSnoozeView.as_view(), name='reminder_snooze'),
+    path('reminders/<int:pk>/complete/', ReminderCompleteView.as_view(), name='reminder_complete'),
 ]

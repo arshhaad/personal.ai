@@ -1,38 +1,29 @@
 import { useState } from 'react';
-import { GoogleLogin, useGoogleLogin } from '@react-oauth/google';
+import { useGoogleLogin } from '@react-oauth/google';
 import { useAuth } from '../../context/useAuth';
 import { useToast } from '../../context/useToast';
 import { Loader2, AlertCircle } from 'lucide-react';
 
-export default function GoogleLoginButton({ onSuccess, mode = 'standard' }) {
+const LOGIN_WORKSPACE_SCOPES = [
+  'openid',
+  'email',
+  'profile',
+  'https://www.googleapis.com/auth/calendar.events',
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/gmail.send',
+].join(' ');
+
+export default function GoogleLoginButton({ onSuccess }) {
   const { loginWithGoogle } = useAuth();
   const { showToast } = useToast();
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState(null);
 
-  const handleCredentialSuccess = async (credentialResponse) => {
-    setLoading(true);
-    setErrorMessage(null);
-    try {
-      await loginWithGoogle({ credential: credentialResponse.credential });
-      if (onSuccess) onSuccess();
-    } catch (err) {
-      const msg = err.message || 'Google sign-in failed. Please try again.';
-      setErrorMessage(msg);
-      showToast(msg, 'error', 3000);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleCredentialError = () => {
-    const msg = 'Google Sign-In prompt was cancelled or encountered an error.';
-    setErrorMessage(msg);
-    showToast(msg, 'error', 3000);
-  };
-
   const triggerCodeLogin = useGoogleLogin({
     flow: 'auth-code',
+    ux_mode: 'popup',
+    scope: LOGIN_WORKSPACE_SCOPES,
+    include_granted_scopes: true,
     onSuccess: async (codeResponse) => {
       setLoading(true);
       setErrorMessage(null);
@@ -40,7 +31,7 @@ export default function GoogleLoginButton({ onSuccess, mode = 'standard' }) {
         await loginWithGoogle({ code: codeResponse.code });
         if (onSuccess) onSuccess();
       } catch (err) {
-        const msg = err.message || 'Failed to authenticate authorization code.';
+        const msg = err.message || 'Failed to authenticate with Google.';
         setErrorMessage(msg);
         showToast(msg, 'error', 3000);
       } finally {
@@ -68,7 +59,7 @@ export default function GoogleLoginButton({ onSuccess, mode = 'standard' }) {
           <Loader2 size={20} className="animate-spin" />
           <span>Authenticating with Google...</span>
         </div>
-      ) : mode === 'custom' ? (
+      ) : (
         <button
           type="button"
           onClick={() => triggerCodeLogin()}
@@ -95,19 +86,6 @@ export default function GoogleLoginButton({ onSuccess, mode = 'standard' }) {
           </svg>
           <span>Continue with Google</span>
         </button>
-      ) : (
-        <div className="google-official-btn-wrapper">
-          <GoogleLogin
-            onSuccess={handleCredentialSuccess}
-            onError={handleCredentialError}
-            useOneTap
-            theme="outline"
-            size="large"
-            shape="pill"
-            text="continue_with"
-            locale="en"
-          />
-        </div>
       )}
     </div>
   );

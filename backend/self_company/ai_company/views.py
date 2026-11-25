@@ -15,11 +15,16 @@ logger = logging.getLogger(__name__)
 from .models import (
     UserProfile,
     GoogleDriveIntegration,
+    GoogleCalendarIntegration,
+    GmailIntegration,
     UserAIPreferences,
     PersonalInformation,
     UploadedDocument,
     UserMemory,
     ApplicationSettings,
+    Notification,
+    Reminder,
+    ReminderHistory,
     Conversation,
     Message,
 )
@@ -28,6 +33,16 @@ from .serializers import (
     GoogleDriveIntegrationSerializer,
     GoogleDriveConnectSerializer,
     GoogleDriveImportSerializer,
+    GoogleCalendarIntegrationSerializer,
+    GmailIntegrationSerializer,
+    CalendarEventCreateSerializer,
+    GmailSendSerializer,
+    WebSearchRequestSerializer,
+    NotificationSerializer,
+    ReminderSerializer,
+    ReminderCreateUpdateSerializer,
+    ReminderSnoozeSerializer,
+    ReminderHistorySerializer,
     UserSerializer,
     UserProfileUpdateSerializer,
     UserAIPreferencesSerializer,
@@ -60,6 +75,23 @@ from .google_drive_service import (
     GOOGLE_DRIVE_SCOPE,
     PERMISSION_DESCRIPTION,
 )
+from .google_workspace_service import (
+    GOOGLE_CALENDAR_SCOPE,
+    GMAIL_SCOPE,
+    exchange_google_code,
+    ensure_valid_google_token,
+    revoke_google_token,
+    fetch_google_account_profile,
+    list_calendar_events,
+    create_calendar_event,
+    delete_calendar_event,
+    fetch_gmail_profile,
+    list_gmail_messages,
+    send_gmail_message,
+)
+from .web_search_service import perform_web_search
+from .notification_service import create_notification, sync_upcoming_calendar_notifications
+from .reminder_service import sync_due_reminders, compute_next_occurrence
 from .ai_service import generate_ai_response
 from .document_service import validate_document_file, process_document
 
@@ -569,6 +601,14 @@ class DocumentListUploadView(APIView):
                 # Run extraction synchronously (or queue in background)
                 process_document(doc)
                 created_docs.append(doc)
+                if doc.status == 'completed':
+                    create_notification(
+                        user=request.user,
+                        title="Document Ready",
+                        message=f"'{doc.original_name}' was processed" + (" and saved to your Google Drive folder." if doc.drive_file_id else " into your knowledge base."),
+                        category='document',
+                        action_url='/personalization',
+                    )
             except ValueError as ve:
                 errors.append(f"{file_obj.name}: {str(ve)}")
             except Exception as e:
@@ -928,6 +968,7 @@ class SendMessageView(APIView):
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
         content = serializer.validated_data['content']
+        use_web_search = serializer.validated_data.get('use_web_search', False)
 
         # 1. Save user message
         user_message = Message.objects.create(
@@ -947,7 +988,8 @@ class SendMessageView(APIView):
         # 3. Generate AI response via service layer
         ai_reply_content = generate_ai_response(
             conversation=conversation,
-            user_message=content
+            user_message=content,
+            use_web_search=use_web_search,
         )
 
         # 4. Save AI assistant message
@@ -967,6 +1009,55 @@ class SendMessageView(APIView):
         }, status=status.HTTP_201_CREATED)
 
 
+class MessageDetailView(APIView):
+    """
+    Edit a user message within a conversation and regenerate the AI response cleanly.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk, message_id):
+        conversation = get_object_or_404(Conversation, pk=pk, user=request.user)
+        user_message = get_object_or_404(
+            Message,
+            pk=message_id,
+            conversation=conversation,
+            role='user',
+        )
+
+        serializer = MessageCreateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        new_content = serializer.validated_data['content']
+        use_web_search = serializer.validated_data.get('use_web_search', False)
+
+        # Update user prompt and prune subsequent messages so conversation timeline stays consistent
+        user_message.content = new_content
+        user_message.save(update_fields=['content'])
+        Message.objects.filter(conversation=conversation, id__gt=user_message.id).delete()
+
+        # Generate refreshed AI response
+        ai_reply_content = generate_ai_response(
+            conversation=conversation,
+            user_message=new_content,
+            use_web_search=use_web_search,
+        )
+
+        assistant_message = Message.objects.create(
+            conversation=conversation,
+            role='assistant',
+            content=ai_reply_content,
+        )
+        conversation.save(update_fields=['updated_at'])
+
+        return Response({
+            'user_message': MessageSerializer(user_message).data,
+            'assistant_message': MessageSerializer(assistant_message).data,
+            'conversation_title': conversation.title,
+            'conversation': ConversationDetailSerializer(conversation).data,
+        }, status=status.HTTP_200_OK)
+
+
 class HealthCheckView(APIView):
     """
     Lightweight healthcheck endpoint for Docker, load balancers, and monitoring.
@@ -978,3 +1069,668 @@ class HealthCheckView(APIView):
             'status': 'healthy',
             'service': 'personal-ai-backend',
         }, status=status.HTTP_200_OK)
+
+
+# ============================================================================
+# Shared Helper for Google Workspace OAuth Connection (Calendar & Gmail)
+# ============================================================================
+
+def _save_workspace_record(user, model_cls, email_field, display_field, access_token, refresh_token, expires_in, scope, resolved_email, resolved_name):
+    integration, _ = model_cls.objects.get_or_create(user=user)
+    integration.is_connected = True
+    integration.access_token = access_token or ''
+    if refresh_token:
+        integration.refresh_token = refresh_token
+    integration.token_expiry = timezone.now() + timedelta(seconds=expires_in)
+    integration.scope = scope
+    setattr(integration, email_field, resolved_email)
+    setattr(integration, display_field, resolved_name)
+    integration.connected_at = timezone.now()
+    integration.save()
+    return integration
+
+
+class GoogleWorkspaceConnectView(APIView):
+    """
+    Connect both Google Calendar and Gmail in a single OAuth authorization
+    for the user's signed-in Google account (no separate account chooser).
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = GoogleDriveConnectSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        code = serializer.validated_data.get('code')
+        access_token = serializer.validated_data.get('access_token')
+        refresh_token = serializer.validated_data.get('refresh_token', '')
+        redirect_uri = serializer.validated_data.get('redirect_uri', 'postmessage')
+        default_scope = f"{GOOGLE_CALENDAR_SCOPE} {GMAIL_SCOPE}"
+
+        try:
+            if code:
+                token_data = exchange_google_code(code, redirect_uri=redirect_uri)
+                access_token = token_data.get('access_token')
+                refresh_token = token_data.get('refresh_token', '')
+                expires_in = int(token_data.get('expires_in') or 3600)
+                scope = token_data.get('scope') or default_scope
+            else:
+                expires_in = 3600
+                scope = default_scope
+
+            user_info = fetch_google_account_profile(access_token) if access_token else {}
+            gmail_email = fetch_gmail_profile(access_token) if access_token else ''
+            resolved_email = (gmail_email or user_info.get('email') or request.user.email or '').strip()
+            resolved_name = user_info.get('display_name') or request.user.get_full_name() or request.user.username
+
+            if (
+                request.user.email
+                and resolved_email
+                and resolved_email.lower() != request.user.email.strip().lower()
+            ):
+                return Response(
+                    {
+                        'error': (
+                            f"Please authorize using your signed-in account ({request.user.email}) "
+                            f"instead of {resolved_email}."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            scope_lower = str(scope).lower()
+            connect_calendar = ('calendar' in scope_lower) or (not code and 'gmail' not in scope_lower)
+            connect_gmail = ('gmail' in scope_lower) or (not code and 'calendar' not in scope_lower)
+
+            cal_obj, _ = GoogleCalendarIntegration.objects.get_or_create(user=request.user)
+            gmail_obj, _ = GmailIntegration.objects.get_or_create(user=request.user)
+
+            if connect_calendar:
+                cal_obj = _save_workspace_record(
+                    request.user,
+                    GoogleCalendarIntegration,
+                    'calendar_email',
+                    'calendar_display_name',
+                    access_token,
+                    refresh_token or cal_obj.refresh_token,
+                    expires_in,
+                    scope,
+                    resolved_email,
+                    resolved_name,
+                )
+
+            if connect_gmail:
+                gmail_obj = _save_workspace_record(
+                    request.user,
+                    GmailIntegration,
+                    'gmail_address',
+                    'gmail_display_name',
+                    access_token,
+                    refresh_token or gmail_obj.refresh_token,
+                    expires_in,
+                    scope,
+                    resolved_email,
+                    resolved_name,
+                )
+
+            if connect_calendar or connect_gmail:
+                create_notification(
+                    user=request.user,
+                    title="Mail & Calendar Connected",
+                    message=f"Google Calendar and Gmail are connected for {resolved_email}.",
+                    category='integration',
+                    action_url='/integrations',
+                )
+
+            return Response(
+                {
+                    'message': f'Connected Google Workspace for {resolved_email}.',
+                    'calendar': GoogleCalendarIntegrationSerializer(cal_obj).data,
+                    'gmail': GmailIntegrationSerializer(gmail_obj).data,
+                },
+                status=status.HTTP_200_OK,
+            )
+        except Exception as e:
+            return Response(
+                {'error': f'Failed to connect Google Mail & Calendar: {str(e)}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+
+def _connect_google_workspace_integration(request, model_cls, serializer_cls, default_scope, email_field, display_field, label, fetch_email_fn=None):
+    serializer = GoogleDriveConnectSerializer(data=request.data)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    code = serializer.validated_data.get('code')
+    access_token = serializer.validated_data.get('access_token')
+    refresh_token = serializer.validated_data.get('refresh_token', '')
+    redirect_uri = serializer.validated_data.get('redirect_uri', 'postmessage')
+
+    integration, _ = model_cls.objects.get_or_create(user=request.user)
+    try:
+        if code:
+            token_data = exchange_google_code(code, redirect_uri=redirect_uri)
+            access_token = token_data.get('access_token')
+            refresh_token = token_data.get('refresh_token', integration.refresh_token)
+            expires_in = token_data.get('expires_in', 3600)
+            scope = token_data.get('scope', default_scope)
+        else:
+            expires_in = 3600
+            scope = default_scope
+
+        user_info = fetch_google_account_profile(access_token) if access_token else {}
+        resolved_email = (fetch_email_fn(access_token) if (fetch_email_fn and access_token) else '') or user_info.get('email') or request.user.email
+        resolved_name = user_info.get('display_name') or request.user.get_full_name() or request.user.username
+
+        integration.is_connected = True
+        integration.access_token = access_token or ''
+        if refresh_token:
+            integration.refresh_token = refresh_token
+        integration.token_expiry = timezone.now() + timedelta(seconds=expires_in)
+        integration.scope = scope
+        setattr(integration, email_field, resolved_email)
+        setattr(integration, display_field, resolved_name)
+        integration.connected_at = timezone.now()
+        integration.save()
+
+        create_notification(
+            user=request.user,
+            title=f"{label} Connected",
+            message=f"{label} is now connected for {resolved_email}.",
+            category='integration',
+            action_url='/integrations',
+        )
+
+        return Response({
+            'message': f'{label} connected successfully.',
+            'data': serializer_cls(integration).data,
+        }, status=status.HTTP_200_OK)
+    except Exception as e:
+        return Response({'error': f'Failed to connect {label}: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+def _disconnect_google_workspace_integration(request, model_cls, serializer_cls, label):
+    integration, _ = model_cls.objects.get_or_create(user=request.user)
+    if integration.access_token or integration.refresh_token:
+        revoke_google_token(integration.refresh_token or integration.access_token)
+
+    integration.is_connected = False
+    integration.access_token = ''
+    integration.refresh_token = ''
+    integration.token_expiry = None
+    integration.connected_at = None
+    integration.save()
+
+    return Response({
+        'message': f'{label} disconnected successfully.',
+        'data': serializer_cls(integration).data,
+    }, status=status.HTTP_200_OK)
+
+
+# ============================================================================
+# Google Calendar Integration Views
+# ============================================================================
+
+class GoogleCalendarStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        integration, _ = GoogleCalendarIntegration.objects.get_or_create(user=request.user)
+        return Response(GoogleCalendarIntegrationSerializer(integration).data, status=status.HTTP_200_OK)
+
+
+class GoogleCalendarConnectView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        return _connect_google_workspace_integration(
+            request,
+            GoogleCalendarIntegration,
+            GoogleCalendarIntegrationSerializer,
+            GOOGLE_CALENDAR_SCOPE,
+            'calendar_email',
+            'calendar_display_name',
+            'Google Calendar',
+        )
+
+
+class GoogleCalendarDisconnectView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        return _disconnect_google_workspace_integration(
+            request,
+            GoogleCalendarIntegration,
+            GoogleCalendarIntegrationSerializer,
+            'Google Calendar',
+        )
+
+
+class GoogleCalendarEventsView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        integration, _ = GoogleCalendarIntegration.objects.get_or_create(user=request.user)
+        if not integration.is_connected:
+            return Response(
+                {'error': 'Google Calendar is not connected. Please connect Google Calendar first.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            days = int(request.query_params.get('days', 14))
+            days = max(1, min(days, 90))
+        except (TypeError, ValueError):
+            days = 14
+
+        try:
+            token = ensure_valid_google_token(integration)
+            events = list_calendar_events(token, days=days)
+            return Response({'events': events}, status=status.HTTP_200_OK)
+        except GoogleDriveAPIError as gde:
+            return Response(gde.to_dict(), status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+    def post(self, request):
+        integration, _ = GoogleCalendarIntegration.objects.get_or_create(user=request.user)
+        if not integration.is_connected:
+            return Response(
+                {'error': 'Google Calendar is not connected. Please connect Google Calendar first.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = CalendarEventCreateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            token = ensure_valid_google_token(integration)
+            event = create_calendar_event(
+                access_token=token,
+                summary=serializer.validated_data['summary'],
+                start_time=serializer.validated_data['start_time'],
+                end_time=serializer.validated_data['end_time'],
+                description=serializer.validated_data.get('description', ''),
+                location=serializer.validated_data.get('location', ''),
+            )
+            create_notification(
+                user=request.user,
+                title="Calendar Event Created",
+                message=f"Scheduled '{event['summary']}' on Google Calendar.",
+                category='calendar',
+                action_url='/integrations',
+            )
+            return Response({'message': 'Calendar event created successfully.', 'event': event}, status=status.HTTP_201_CREATED)
+        except GoogleDriveAPIError as gde:
+            return Response(gde.to_dict(), status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class GoogleCalendarEventDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, event_id):
+        integration, _ = GoogleCalendarIntegration.objects.get_or_create(user=request.user)
+        if not integration.is_connected:
+            return Response({'error': 'Google Calendar is not connected.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            token = ensure_valid_google_token(integration)
+            delete_calendar_event(token, event_id)
+            return Response({'message': 'Calendar event deleted.'}, status=status.HTTP_200_OK)
+        except GoogleDriveAPIError as gde:
+            return Response(gde.to_dict(), status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ============================================================================
+# Gmail Integration Views
+# ============================================================================
+
+class GmailStatusView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        integration, _ = GmailIntegration.objects.get_or_create(user=request.user)
+        return Response(GmailIntegrationSerializer(integration).data, status=status.HTTP_200_OK)
+
+
+class GmailConnectView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        return _connect_google_workspace_integration(
+            request,
+            GmailIntegration,
+            GmailIntegrationSerializer,
+            GMAIL_SCOPE,
+            'gmail_address',
+            'gmail_display_name',
+            'Gmail',
+            fetch_email_fn=fetch_gmail_profile,
+        )
+
+
+class GmailDisconnectView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        return _disconnect_google_workspace_integration(
+            request,
+            GmailIntegration,
+            GmailIntegrationSerializer,
+            'Gmail',
+        )
+
+
+class GmailMessagesView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        integration, _ = GmailIntegration.objects.get_or_create(user=request.user)
+        if not integration.is_connected:
+            return Response(
+                {'error': 'Gmail is not connected. Please connect Gmail first.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        query = request.query_params.get('q', '')
+        try:
+            token = ensure_valid_google_token(integration)
+            messages = list_gmail_messages(token, query=query, max_results=15)
+            return Response({'messages': messages}, status=status.HTTP_200_OK)
+        except GoogleDriveAPIError as gde:
+            return Response(gde.to_dict(), status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class GmailSendView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        integration, _ = GmailIntegration.objects.get_or_create(user=request.user)
+        if not integration.is_connected:
+            return Response(
+                {'error': 'Gmail is not connected. Please connect Gmail first.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        serializer = GmailSendSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            token = ensure_valid_google_token(integration)
+            sent = send_gmail_message(
+                access_token=token,
+                to_email=serializer.validated_data['to'],
+                subject=serializer.validated_data['subject'],
+                body=serializer.validated_data['body'],
+            )
+            create_notification(
+                user=request.user,
+                title="Email Sent via Gmail",
+                message=f"Sent '{sent['subject']}' to {sent['to']}.",
+                category='email',
+                action_url='/integrations',
+            )
+            return Response({'message': 'Email sent successfully via Gmail.', 'sent': sent}, status=status.HTTP_200_OK)
+        except GoogleDriveAPIError as gde:
+            return Response(gde.to_dict(), status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ============================================================================
+# Live Web Search Integration View
+# ============================================================================
+
+class WebSearchView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        app_settings, _ = ApplicationSettings.objects.get_or_create(user=request.user)
+        if not app_settings.web_search_enabled:
+            return Response(
+                {'error': 'Web Search is disabled in your settings. Enable Web Search to perform live lookups.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = WebSearchRequestSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            results = perform_web_search(
+                query=serializer.validated_data['query'],
+                max_results=serializer.validated_data.get('max_results', 5),
+            )
+            return Response({
+                'query': serializer.validated_data['query'],
+                'results': results,
+                'count': len(results),
+            }, status=status.HTTP_200_OK)
+        except ValueError as ve:
+            return Response({'error': str(ve)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({'error': f'Web search failed: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ============================================================================
+# Notifications Center Views
+# ============================================================================
+
+class NotificationListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # Opportunistically sync upcoming Google Calendar event alerts & due reminders
+        sync_upcoming_calendar_notifications(request.user)
+        triggered_reminders = sync_due_reminders(request.user)
+
+        qs = Notification.objects.filter(user=request.user)
+        unread_count = qs.filter(is_read=False).count()
+        serializer = NotificationSerializer(qs[:40], many=True)
+        return Response({
+            'notifications': serializer.data,
+            'unread_count': unread_count,
+            'newly_triggered_reminders': ReminderSerializer(triggered_reminders, many=True).data,
+        }, status=status.HTTP_200_OK)
+
+
+class NotificationDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        notif = get_object_or_404(Notification, pk=pk, user=request.user)
+        notif.is_read = True
+        notif.save(update_fields=['is_read'])
+        return Response(NotificationSerializer(notif).data, status=status.HTTP_200_OK)
+
+    def delete(self, request, pk):
+        notif = get_object_or_404(Notification, pk=pk, user=request.user)
+        notif.delete()
+        return Response({'message': 'Notification removed.'}, status=status.HTTP_200_OK)
+
+
+class NotificationReadAllView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        updated = Notification.objects.filter(user=request.user, is_read=False).update(is_read=True)
+        return Response({'message': f'Marked {updated} notification(s) as read.', 'updated_count': updated}, status=status.HTTP_200_OK)
+
+
+class NotificationClearView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        deleted_count, _ = Notification.objects.filter(user=request.user).delete()
+        return Response({'message': f'Cleared {deleted_count} notification(s).', 'deleted_count': deleted_count}, status=status.HTTP_200_OK)
+
+
+# ============================================================================
+# Reminder System Views
+# ============================================================================
+
+class ReminderListCreateView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        newly_triggered = sync_due_reminders(request.user)
+        upcoming_qs = Reminder.objects.filter(user=request.user, status='pending').order_by('scheduled_at')
+        history_qs = ReminderHistory.objects.filter(user=request.user).order_by('-recorded_at')[:50]
+
+        now = timezone.now()
+        due_now = upcoming_qs.filter(scheduled_at__lte=now)
+
+        return Response({
+            'upcoming': ReminderSerializer(upcoming_qs, many=True).data,
+            'upcoming_count': upcoming_qs.count(),
+            'due_now': ReminderSerializer(due_now, many=True).data,
+            'newly_triggered': ReminderSerializer(newly_triggered, many=True).data,
+            'history': ReminderHistorySerializer(history_qs, many=True).data,
+        }, status=status.HTTP_200_OK)
+
+    def post(self, request):
+        serializer = ReminderCreateUpdateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        reminder = Reminder.objects.create(
+            user=request.user,
+            title=data['title'],
+            message=data.get('message', ''),
+            scheduled_at=data['scheduled_at'],
+            timezone_name=data.get('timezone_name', 'UTC'),
+            recurrence=data.get('recurrence', 'none'),
+            status='pending',
+        )
+        return Response(ReminderSerializer(reminder).data, status=status.HTTP_201_CREATED)
+
+
+class ReminderDetailView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request, pk):
+        reminder = get_object_or_404(Reminder, pk=pk, user=request.user)
+        serializer = ReminderCreateUpdateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        reminder.title = data['title']
+        reminder.message = data.get('message', '')
+        reminder.scheduled_at = data['scheduled_at']
+        reminder.timezone_name = data.get('timezone_name', reminder.timezone_name)
+        reminder.recurrence = data.get('recurrence', reminder.recurrence)
+        reminder.status = 'pending'
+        reminder.notified_for_at = None
+        reminder.snoozed_until = None
+        reminder.completed_at = None
+        reminder.save()
+        return Response(ReminderSerializer(reminder).data, status=status.HTTP_200_OK)
+
+    def delete(self, request, pk):
+        reminder = get_object_or_404(Reminder, pk=pk, user=request.user)
+        reminder.delete()
+        return Response({'message': 'Reminder deleted.'}, status=status.HTTP_200_OK)
+
+
+class ReminderSnoozeView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        reminder = get_object_or_404(Reminder, pk=pk, user=request.user)
+        serializer = ReminderSnoozeSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        minutes = int(serializer.validated_data['minutes'])
+        now = timezone.now()
+        new_time = now + timedelta(minutes=minutes)
+
+        ReminderHistory.objects.create(
+            user=request.user,
+            reminder=reminder,
+            title=reminder.title,
+            message=reminder.message or '',
+            scheduled_at=reminder.scheduled_at,
+            timezone_name=reminder.timezone_name,
+            recurrence=reminder.recurrence,
+            event_type='snoozed',
+        )
+
+        reminder.scheduled_at = new_time
+        reminder.snoozed_until = new_time
+        reminder.status = 'pending'
+        reminder.notified_for_at = None
+        reminder.completed_at = None
+        reminder.save()
+
+        return Response({
+            'message': f'Reminder snoozed for {minutes} minutes.',
+            'reminder': ReminderSerializer(reminder).data,
+        }, status=status.HTTP_200_OK)
+
+
+class ReminderCompleteView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, pk):
+        reminder = get_object_or_404(Reminder, pk=pk, user=request.user)
+        now = timezone.now()
+
+        ReminderHistory.objects.create(
+            user=request.user,
+            reminder=reminder,
+            title=reminder.title,
+            message=reminder.message or '',
+            scheduled_at=reminder.scheduled_at,
+            timezone_name=reminder.timezone_name,
+            recurrence=reminder.recurrence,
+            event_type='completed',
+        )
+
+        if reminder.recurrence in ('daily', 'weekly', 'monthly'):
+            next_dt = compute_next_occurrence(
+                reminder.scheduled_at,
+                reminder.recurrence,
+                reminder.timezone_name,
+                reference_now=now,
+            )
+            reminder.scheduled_at = next_dt
+            reminder.status = 'pending'
+            reminder.notified_for_at = None
+            reminder.snoozed_until = None
+            reminder.completed_at = now
+            reminder.save()
+            return Response({
+                'message': f'Completed current occurrence. Next {reminder.recurrence} reminder scheduled.',
+                'rescheduled': True,
+                'reminder': ReminderSerializer(reminder).data,
+            }, status=status.HTTP_200_OK)
+
+        reminder.status = 'completed'
+        reminder.completed_at = now
+        reminder.save()
+        return Response({
+            'message': 'Reminder marked as done.',
+            'rescheduled': False,
+            'reminder': ReminderSerializer(reminder).data,
+        }, status=status.HTTP_200_OK)
+
+
+class ReminderHistoryClearView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        deleted_count, _ = ReminderHistory.objects.filter(user=request.user).delete()
+        return Response({'message': f'Cleared {deleted_count} history item(s).', 'deleted_count': deleted_count}, status=status.HTTP_200_OK)

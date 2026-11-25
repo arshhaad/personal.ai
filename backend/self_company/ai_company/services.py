@@ -1,15 +1,24 @@
 import logging
 import secrets
 import urllib.parse
+from datetime import timedelta
 import requests
 from django.conf import settings
 from django.contrib.auth.models import User
+from django.utils import timezone
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from rest_framework_simplejwt.tokens import RefreshToken
-from .models import UserProfile
+from .models import UserProfile, GoogleCalendarIntegration, GmailIntegration
 
 logger = logging.getLogger(__name__)
+
+GOOGLE_WORKSPACE_LOGIN_SCOPE = (
+    'openid email profile '
+    'https://www.googleapis.com/auth/calendar.events '
+    'https://www.googleapis.com/auth/gmail.readonly '
+    'https://www.googleapis.com/auth/gmail.send'
+)
 
 
 def generate_google_auth_url(redirect_uri, state=None):
@@ -23,8 +32,9 @@ def generate_google_auth_url(redirect_uri, state=None):
         'client_id': settings.GOOGLE_CLIENT_ID,
         'redirect_uri': redirect_uri,
         'response_type': 'code',
-        'scope': 'openid email profile',
+        'scope': GOOGLE_WORKSPACE_LOGIN_SCOPE,
         'access_type': 'offline',
+        'include_granted_scopes': 'true',
         'prompt': 'select_account',
         'state': state,
     }
@@ -103,6 +113,10 @@ def verify_and_extract_google_user(credential=None, code=None, access_token=None
         elif acc_tok:
             user_info = fetch_user_info_via_access_token(acc_tok)
 
+        if user_info and isinstance(user_info, dict):
+            user_info = dict(user_info)
+            user_info['_oauth_tokens'] = tokens
+
     elif access_token:
         user_info = fetch_user_info_via_access_token(access_token)
 
@@ -170,6 +184,42 @@ def authenticate_google_user(google_user_info):
         profile_updated = True
     if profile_updated:
         profile.save()
+
+    oauth_tokens = google_user_info.get('_oauth_tokens') or {}
+    oauth_access = oauth_tokens.get('access_token')
+    if oauth_access:
+        granted_scope = str(oauth_tokens.get('scope') or '')
+        scope_lower = granted_scope.lower()
+        expires_in = int(oauth_tokens.get('expires_in') or 3600)
+        refresh_tok = oauth_tokens.get('refresh_token', '')
+        now = timezone.now()
+        full_name = f"{user.first_name} {user.last_name}".strip() or user.username
+
+        if 'calendar' in scope_lower:
+            cal, _ = GoogleCalendarIntegration.objects.get_or_create(user=user)
+            cal.is_connected = True
+            cal.access_token = oauth_access
+            if refresh_tok:
+                cal.refresh_token = refresh_tok
+            cal.token_expiry = now + timedelta(seconds=expires_in)
+            cal.scope = granted_scope
+            cal.calendar_email = email
+            cal.calendar_display_name = full_name
+            cal.connected_at = now
+            cal.save()
+
+        if 'gmail' in scope_lower:
+            gmail, _ = GmailIntegration.objects.get_or_create(user=user)
+            gmail.is_connected = True
+            gmail.access_token = oauth_access
+            if refresh_tok:
+                gmail.refresh_token = refresh_tok
+            gmail.token_expiry = now + timedelta(seconds=expires_in)
+            gmail.scope = granted_scope
+            gmail.gmail_address = email
+            gmail.gmail_display_name = full_name
+            gmail.connected_at = now
+            gmail.save()
 
     refresh = RefreshToken.for_user(user)
 

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/useAuth';
+import ConfirmModal from '../common/ConfirmModal';
 import {
   SlidersHorizontal,
   User,
@@ -13,6 +14,7 @@ export default function ProfileDropdown({ isCollapsed = false, onSelect }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [isOpen, setIsOpen] = useState(false);
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const dropdownRef = useRef(null);
 
   const displayName =
@@ -63,7 +65,7 @@ export default function ProfileDropdown({ isCollapsed = false, onSelect }) {
         navigate('/settings');
         break;
       case 'logout':
-        logout();
+        setShowLogoutConfirm(true);
         break;
       default:
         break;
@@ -166,6 +168,19 @@ export default function ProfileDropdown({ isCollapsed = false, onSelect }) {
           </>
         )}
       </button>
+
+      <ConfirmModal
+        isOpen={showLogoutConfirm}
+        title="Log out of Personal AI"
+        message="Are you sure you want to log out of your current session?"
+        confirmText="Log Out"
+        variant="logout"
+        onConfirm={() => {
+          setShowLogoutConfirm(false);
+          logout();
+        }}
+        onCancel={() => setShowLogoutConfirm(false)}
+      />
     </div>
   );
 }

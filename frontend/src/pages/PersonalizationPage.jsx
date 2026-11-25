@@ -1,13 +1,13 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
 import { useToast } from '../context/useToast';
 import { personalizationService } from '../services/personalizationService';
 import { googleDriveService } from '../services/googleDriveService';
 import ConnectGoogleDriveModal from '../components/drive/ConnectGoogleDriveModal';
 import GoogleDriveFilePickerModal from '../components/drive/GoogleDriveFilePickerModal';
+import ConfirmModal from '../components/common/ConfirmModal';
+import WorkspaceSidebarLayout from '../components/layout/WorkspaceSidebarLayout';
 import {
-  ArrowLeft,
   UploadCloud,
   FileText,
   Trash2,
@@ -20,7 +20,6 @@ import {
 } from 'lucide-react';
 
 export default function PersonalizationPage() {
-  const navigate = useNavigate();
   const { user, refreshUserData } = useAuth();
   const [isDrivePickerOpen, setIsDrivePickerOpen] = useState(false);
   const [isDriveConnectModalOpen, setIsDriveConnectModalOpen] = useState(false);
@@ -53,24 +52,30 @@ export default function PersonalizationPage() {
   // Status & Feedback
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [confirmState, setConfirmState] = useState({
+    isOpen: false,
+    type: null,
+    payload: null,
+    title: '',
+    message: '',
+    confirmText: '',
+  });
+  const [confirmLoading, setConfirmLoading] = useState(false);
   const { showToast: triggerToast } = useToast();
 
   const showToast = useCallback((message, isError = false) => {
     triggerToast(message, isError ? 'error' : 'success', 3000);
   }, [triggerToast]);
 
-  const handleDisconnectDrive = async () => {
-    if (!window.confirm('Are you sure you want to disconnect Google Drive?')) return;
-    setDisconnectingDrive(true);
-    try {
-      await googleDriveService.disconnect();
-      await refreshUserData();
-      showToast('Google Drive disconnected.');
-    } catch {
-      showToast('Failed to disconnect Google Drive.', true);
-    } finally {
-      setDisconnectingDrive(false);
-    }
+  const handleDisconnectDrive = () => {
+    setConfirmState({
+      isOpen: true,
+      type: 'disconnect_drive',
+      payload: null,
+      title: 'Disconnect Google Drive',
+      message: 'Are you sure you want to disconnect Google Drive? Future uploads will only be stored locally.',
+      confirmText: 'Disconnect',
+    });
   };
 
   // Load All User Data on Mount
@@ -231,15 +236,47 @@ export default function PersonalizationPage() {
     }
   };
 
-  const handleDeleteDocument = async (id, docName) => {
-    if (!window.confirm(`Are you sure you want to delete "${docName}"?`)) return;
+  const handleDeleteDocument = (id, docName) => {
+    setConfirmState({
+      isOpen: true,
+      type: 'delete_doc',
+      payload: { id, docName },
+      title: 'Delete Uploaded Document',
+      message: `Are you sure you want to delete "${docName}"? This will permanently remove it from your knowledge base and Google Drive folder if synced.`,
+      confirmText: 'Delete Document',
+    });
+  };
+
+  const handleConfirmAction = async () => {
+    setConfirmLoading(true);
     try {
-      await personalizationService.deleteDocument(id);
-      setDocuments((prev) => prev.filter((d) => d.id !== id));
-      showToast('Document deleted.');
+      if (confirmState.type === 'delete_doc' && confirmState.payload) {
+        const { id } = confirmState.payload;
+        await personalizationService.deleteDocument(id);
+        setDocuments((prev) => prev.filter((d) => d.id !== id));
+        showToast('Document deleted.');
+      } else if (confirmState.type === 'disconnect_drive') {
+        setDisconnectingDrive(true);
+        try {
+          await googleDriveService.disconnect();
+          await refreshUserData();
+          showToast('Google Drive disconnected.');
+        } finally {
+          setDisconnectingDrive(false);
+        }
+      } else if (confirmState.type === 'clear_instructions') {
+        setCustomInstructions('');
+        showToast('Custom instructions cleared.');
+      } else if (confirmState.type === 'clear_bio') {
+        setMoreAboutYou('');
+        showToast('Personal background cleared.');
+      }
+      setConfirmState({ isOpen: false, type: null, payload: null, title: '', message: '', confirmText: '' });
     } catch (err) {
-      console.error('Delete doc error:', err);
-      showToast('Failed to delete document.', true);
+      console.error('Confirmed action error:', err);
+      showToast('Action failed. Please try again.', true);
+    } finally {
+      setConfirmLoading(false);
     }
   };
 
@@ -290,60 +327,49 @@ export default function PersonalizationPage() {
 
   const candidateName = preferredName.trim() || user?.first_name || user?.username || '';
 
-  if (loading) {
-    return (
-      <div className="custom-instructions-container loading-wrapper">
-        <Loader2 size={32} className="animate-spin" />
-        <p>Loading personalization...</p>
-      </div>
-    );
-  }
+  const topbarActions = !loading ? (
+    <div className="instruction-topbar-actions">
+      <button
+        type="button"
+        onClick={handleCancel}
+        disabled={saving || !hasUnsavedChanges}
+        className="btn-instruction-cancel"
+        title="Discard changes"
+      >
+        Cancel
+      </button>
+      <button
+        type="button"
+        onClick={handleSave}
+        disabled={saving}
+        className={`btn-instruction-save ${hasUnsavedChanges ? 'has-changes' : ''}`}
+        title="Save changes"
+      >
+        {saving ? (
+          <>
+            <Loader2 size={15} className="animate-spin" />
+            <span>Saving...</span>
+          </>
+        ) : (
+          <span>Save</span>
+        )}
+      </button>
+    </div>
+  ) : null;
 
   return (
-    <div className="custom-instructions-page">
-      {/* Top Bar Header */}
-      <header className="custom-instructions-topbar">
-        <button
-          type="button"
-          onClick={() => navigate('/chat')}
-          className="btn-instruction-back"
-          title="Back to chat"
-        >
-          <ArrowLeft size={18} />
-          <span>Back</span>
-        </button>
-
-        <div className="instruction-topbar-actions">
-          <button
-            type="button"
-            onClick={handleCancel}
-            disabled={saving || !hasUnsavedChanges}
-            className="btn-instruction-cancel"
-            title="Discard changes"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={saving}
-            className={`btn-instruction-save ${hasUnsavedChanges ? 'has-changes' : ''}`}
-            title="Save changes"
-          >
-            {saving ? (
-              <>
-                <Loader2 size={15} className="animate-spin" />
-                <span>Saving...</span>
-              </>
-            ) : (
-              <span>Save</span>
-            )}
-          </button>
+    <WorkspaceSidebarLayout
+      title="Personalization"
+      docCountOverride={loading ? undefined : documents.length}
+      topbarRight={topbarActions}
+    >
+      {loading ? (
+        <div className="custom-instructions-container loading-wrapper">
+          <Loader2 size={32} className="animate-spin" />
+          <p>Loading personalization...</p>
         </div>
-      </header>
-
-      {/* Main Single Scrollable Content */}
-      <main className="custom-instructions-content">
+      ) : (
+        <main className="custom-instructions-content">
         <div className="personalization-page-header">
           <h1 className="instructions-title">Personal AI custom instructions</h1>
           <p className="instructions-subtitle">
@@ -707,7 +733,14 @@ Please teach me whatever I ask in a simple, beginner-friendly way.`}
                 {customInstructions && (
                   <button
                     type="button"
-                    onClick={() => setCustomInstructions('')}
+                    onClick={() => setConfirmState({
+                      isOpen: true,
+                      type: 'clear_instructions',
+                      payload: null,
+                      title: 'Clear Custom Instructions',
+                      message: 'Are you sure you want to clear all your custom instructions?',
+                      confirmText: 'Clear Text',
+                    })}
                     className="btn-clear-text"
                     title="Clear custom instructions"
                   >
@@ -755,7 +788,14 @@ Examples:
                 {moreAboutYou && (
                   <button
                     type="button"
-                    onClick={() => setMoreAboutYou('')}
+                    onClick={() => setConfirmState({
+                      isOpen: true,
+                      type: 'clear_bio',
+                      payload: null,
+                      title: 'Clear More About You',
+                      message: 'Are you sure you want to clear your background details?',
+                      confirmText: 'Clear Text',
+                    })}
                     className="btn-clear-text"
                     title="Clear more about you"
                   >
@@ -796,6 +836,7 @@ Examples:
           </button>
         </div>
       </main>
+      )}
 
       {/* View Document Extracted Text Modal */}
       {viewingDoc && (
@@ -845,6 +886,17 @@ Examples:
           }
         }}
       />
-    </div>
+
+      <ConfirmModal
+        isOpen={confirmState.isOpen}
+        title={confirmState.title}
+        message={confirmState.message}
+        confirmText={confirmState.confirmText}
+        variant="danger"
+        loading={confirmLoading}
+        onConfirm={handleConfirmAction}
+        onCancel={() => !confirmLoading && setConfirmState({ isOpen: false, type: null, payload: null, title: '', message: '', confirmText: '' })}
+      />
+    </WorkspaceSidebarLayout>
   );
 }

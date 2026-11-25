@@ -30,7 +30,9 @@ export default function ConnectGoogleDriveModal({
   const triggerDriveLogin = useGoogleLogin({
     scope: 'https://www.googleapis.com/auth/drive.file',
     flow: 'auth-code',
-    prompt: 'consent',
+    hint: user?.email || undefined,
+    select_account: false,
+    include_granted_scopes: true,
     onSuccess: async (codeResponse) => {
       setConnecting(true);
       setErrorMessage(null);

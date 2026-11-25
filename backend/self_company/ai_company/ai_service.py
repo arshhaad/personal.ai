@@ -11,6 +11,12 @@ from .models import (
     UserMemory,
     Message,
 )
+from .web_search_service import perform_web_search
+from .google_workspace_service import (
+    ensure_valid_google_token,
+    list_calendar_events,
+    list_gmail_messages,
+)
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -371,9 +377,102 @@ def local_rag_fallback(user, user_message: str) -> str:
     return f"Sorry, I can't provide this {topic}. You didn't mention any information about this."
 
 
-def generate_ai_response(conversation, user_message: str, message_history=None) -> str:
+def _fetch_integration_context(user, user_message: str, use_web_search: bool = False):
     """
-    Service layer for generating intelligent, knowledge-augmented AI responses.
+    Gather live integration context (Web Search, Google Calendar, Gmail) when explicitly
+    requested or relevant to the user's prompt.
+    """
+    query_lower = user_message.lower()
+    extra_sections = []
+    web_results = []
+    calendar_events = []
+    gmail_messages = []
+
+    # 1. Web Search (when explicitly toggled on and enabled in settings)
+    web_enabled = True
+    try:
+        if hasattr(user, 'app_settings') and user.app_settings is not None:
+            web_enabled = bool(user.app_settings.web_search_enabled)
+    except Exception:
+        web_enabled = True
+
+    if use_web_search and web_enabled:
+        try:
+            web_results = perform_web_search(user_message, max_results=5)
+            if web_results:
+                lines = [
+                    f"- **{item['title']}** ({item['url']}): {item['snippet']}"
+                    for item in web_results
+                ]
+                extra_sections.append("LIVE WEB SEARCH RESULTS:\n" + "\n".join(lines))
+        except Exception as e:
+            logger.warning(f"Web search context fetch failed: {e}")
+
+    # 2. Google Calendar context when user asks about schedule/events/meetings
+    cal_keywords = ('calendar', 'schedule', 'meeting', 'meetings', 'event', 'events', 'agenda', 'appointment', 'today', 'tomorrow', 'week')
+    cal_integration = getattr(user, 'google_calendar', None)
+    if cal_integration and cal_integration.is_connected and any(k in query_lower for k in cal_keywords):
+        try:
+            token = ensure_valid_google_token(cal_integration)
+            calendar_events = list_calendar_events(token, days=7, max_results=10)
+            if calendar_events:
+                lines = [
+                    f"- **{ev['summary']}** | Start: {ev['start']} | End: {ev['end']}" + (f" | Location: {ev['location']}" if ev.get('location') else "")
+                    for ev in calendar_events
+                ]
+                extra_sections.append("USER UPCOMING GOOGLE CALENDAR EVENTS (NEXT 7 DAYS):\n" + "\n".join(lines))
+        except Exception as e:
+            logger.warning(f"Calendar context fetch failed: {e}")
+
+    # 3. Gmail context when user asks about emails/inbox/messages
+    mail_keywords = ('email', 'emails', 'gmail', 'inbox', 'mail', 'mails', 'unread', 'message from', 'messages')
+    gmail_integration = getattr(user, 'gmail_integration', None)
+    if gmail_integration and gmail_integration.is_connected and any(k in query_lower for k in mail_keywords):
+        try:
+            token = ensure_valid_google_token(gmail_integration)
+            gmail_messages = list_gmail_messages(token, max_results=8)
+            if gmail_messages:
+                lines = [
+                    f"- **Subject:** {m['subject']} | **From:** {m['sender']} | **Date:** {m['date']} | **Snippet:** {m['snippet']}"
+                    for m in gmail_messages
+                ]
+                extra_sections.append("USER RECENT GMAIL MESSAGES:\n" + "\n".join(lines))
+        except Exception as e:
+            logger.warning(f"Gmail context fetch failed: {e}")
+
+    return extra_sections, web_results, calendar_events, gmail_messages
+
+
+def _format_live_integration_fallback(user_message, web_results, calendar_events, gmail_messages):
+    """Build a crisp markdown answer from fetched live integration data when external LLM is unavailable."""
+    sections = []
+    if web_results:
+        lines = [
+            f"- **[{item['title']}]({item['url']})** — {item['snippet'] or item['source']}"
+            for item in web_results
+        ]
+        sections.append(f"**Live Web Search Results for \"{user_message.strip()}\":**\n\n" + "\n".join(lines))
+
+    if calendar_events:
+        lines = [
+            f"- **{ev['summary']}** ({ev['start']}" + (f" • {ev['location']}" if ev.get('location') else "") + ")"
+            for ev in calendar_events
+        ]
+        sections.append("**Upcoming Google Calendar Events:**\n\n" + "\n".join(lines))
+
+    if gmail_messages:
+        lines = [
+            f"- **{m['subject']}** from {m['sender']} — {m['snippet']}"
+            for m in gmail_messages
+        ]
+        sections.append("**Recent Gmail Messages:**\n\n" + "\n".join(lines))
+
+    return "\n\n".join(sections)
+
+
+def generate_ai_response(conversation, user_message: str, message_history=None, use_web_search: bool = False) -> str:
+    """
+    Service layer for generating intelligent, knowledge-augmented and integration-grounded AI responses.
     """
     user = conversation.user
 
@@ -381,12 +480,18 @@ def generate_ai_response(conversation, user_message: str, message_history=None) 
     docs_exist = UploadedDocument.objects.filter(user=user, status='completed').exists()
     info_exist = PersonalInformation.objects.filter(user=user).exists()
 
+    # Gather live integration context (Web Search / Calendar / Gmail)
+    extra_sections, web_results, calendar_events, gmail_messages = _fetch_integration_context(
+        user, user_message, use_web_search=use_web_search
+    )
+    has_live_context = bool(extra_sections)
+
     query_lower = user_message.lower().strip()
     greetings = {"hi", "hello", "hey", "good morning", "good evening", "good afternoon", "who are you", "what can you do"}
     is_greeting = query_lower in greetings or any(query_lower.startswith(g) for g in ["hi ", "hello ", "hey "])
 
-    # If user has neither documents nor personal information:
-    if not docs_exist and not info_exist:
+    # If user has no docs, no personal info, and no live integration data:
+    if not docs_exist and not info_exist and not has_live_context:
         if is_greeting:
             name = user.first_name or user.username
             fallback_app_name = "Personal AI"
@@ -398,13 +503,18 @@ def generate_ai_response(conversation, user_message: str, message_history=None) 
             return (
                 f"Hello {name}! I am your {fallback_app_name} assistant. "
                 f"You haven't uploaded any documents or added personal information yet. "
-                f"Please upload your documents in the Knowledge section so I can assist you with them!"
+                f"Please upload your documents in the Knowledge section, or enable Web Search / connect Calendar & Gmail to get started!"
             )
         topic = extract_topic(user_message)
         return f"Sorry, I can't provide this {topic}. You didn't mention any information about this."
 
     # 1. Build system context (User identity, Custom instructions, Uploaded documents)
     system_prompt = build_system_context(user)
+    if extra_sections:
+        system_prompt += (
+            "\n\nLIVE INTEGRATIONS DATA (Use these real-time sources to answer the user's question and cite links/details cleanly):\n\n"
+            + "\n\n".join(extra_sections)
+        )
 
     # 2. Build multi-turn message history
     history_messages = []
@@ -456,5 +566,11 @@ def generate_ai_response(conversation, user_message: str, message_history=None) 
         except Exception as e:
             logger.error(f"Gemini API call error: {e}")
 
-    # 5. Local Knowledge-Based RAG Fallback
+    # 5. Live Integration Fallback (Web Search / Calendar / Gmail) if active
+    if has_live_context:
+        live_reply = _format_live_integration_fallback(user_message, web_results, calendar_events, gmail_messages)
+        if live_reply:
+            return live_reply
+
+    # 6. Local Knowledge-Based RAG Fallback
     return local_rag_fallback(user, user_message)

@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { useAuth } from '../../context/useAuth';
-import { Brain, User, Copy, Check, ThumbsUp, ThumbsDown, RotateCcw } from 'lucide-react';
+import { Brain, User, Copy, Check, ThumbsUp, ThumbsDown, RotateCcw, Volume2, Square, Pencil, X } from 'lucide-react';
 
 function CodeBlock({ language, children }) {
   const [copied, setCopied] = useState(false);
@@ -38,16 +38,73 @@ export default function ChatMessage({
   userAvatar,
   userName,
   onRegenerate,
+  onEdit,
+  disabled = false,
+  onSpeak,
+  isSpeakingThis = false,
 }) {
   const { appName } = useAuth();
   const isUser = message.role === 'user';
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState(null); // 'up' | 'down' | null
+  const [isEditing, setIsEditing] = useState(false);
+  const [draftContent, setDraftContent] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+  const editTextareaRef = useRef(null);
+
+  useEffect(() => {
+    if (isEditing && editTextareaRef.current) {
+      const el = editTextareaRef.current;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+      el.style.height = 'auto';
+      el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
+    }
+  }, [isEditing]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(message.content);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const canEditUserMessage = Boolean(
+    isUser && onEdit && !disabled && !String(message.id).startsWith('temp-')
+  );
+
+  const handleStartEdit = () => {
+    setDraftContent(message.content);
+    setIsEditing(true);
+  };
+
+  const handleCancelEdit = () => {
+    setIsEditing(false);
+    setDraftContent('');
+  };
+
+  const handleSaveEdit = async () => {
+    const trimmed = draftContent.trim();
+    if (!trimmed || savingEdit) return;
+    if (trimmed === message.content.trim()) {
+      setIsEditing(false);
+      return;
+    }
+    setSavingEdit(true);
+    try {
+      await onEdit(message.id, trimmed);
+      setIsEditing(false);
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const handleEditKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSaveEdit();
+    } else if (e.key === 'Escape') {
+      handleCancelEdit();
+    }
   };
 
   return (
@@ -69,13 +126,52 @@ export default function ChatMessage({
           </div>
         )}
 
-        <div className={`message-bubble ${isUser ? 'user-bubble' : 'assistant-bubble'}`}>
+        <div className={`message-bubble ${isUser ? 'user-bubble' : 'assistant-bubble'} ${isEditing ? 'editing-bubble' : ''}`}>
           {isUser ? (
-            <div className="user-message-text">
-              {message.content.split('\n').map((line, idx) => (
-                <p key={idx}>{line || '\u00A0'}</p>
-              ))}
-            </div>
+            isEditing ? (
+              <div className="user-edit-box">
+                <textarea
+                  ref={editTextareaRef}
+                  value={draftContent}
+                  onChange={(e) => {
+                    setDraftContent(e.target.value);
+                    e.target.style.height = 'auto';
+                    e.target.style.height = `${Math.min(e.target.scrollHeight, 220)}px`;
+                  }}
+                  onKeyDown={handleEditKeyDown}
+                  disabled={savingEdit}
+                  rows={2}
+                  className="user-edit-textarea"
+                  aria-label="Edit your message"
+                />
+                <div className="user-edit-actions">
+                  <button
+                    type="button"
+                    onClick={handleCancelEdit}
+                    disabled={savingEdit}
+                    className="btn-edit-cancel"
+                  >
+                    <X size={13} />
+                    <span>Cancel</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveEdit}
+                    disabled={savingEdit || !draftContent.trim()}
+                    className="btn-edit-save"
+                  >
+                    <Check size={13} />
+                    <span>{savingEdit ? 'Sending...' : 'Save & Send'}</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="user-message-text">
+                {message.content.split('\n').map((line, idx) => (
+                  <p key={idx}>{line || '\u00A0'}</p>
+                ))}
+              </div>
+            )
           ) : (
             <div className="assistant-markdown-body">
               <ReactMarkdown
@@ -99,6 +195,33 @@ export default function ChatMessage({
             </div>
           )}
         </div>
+
+        {/* Action Toolbar for User Messages (Copy & Edit) */}
+        {isUser && !isEditing && (
+          <div className="user-action-bar">
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="btn-action-icon"
+              title="Copy message"
+              aria-label="Copy message"
+            >
+              {copied ? <Check size={14} color="#34d399" /> : <Copy size={14} />}
+            </button>
+
+            {canEditUserMessage && (
+              <button
+                type="button"
+                onClick={handleStartEdit}
+                className="btn-action-icon"
+                title="Edit message"
+                aria-label="Edit message"
+              >
+                <Pencil size={14} />
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Action Toolbar for AI Responses (ChatGPT & Gemini style) */}
         {!isUser && (
@@ -138,6 +261,17 @@ export default function ChatMessage({
                 title="Regenerate response"
               >
                 <RotateCcw size={14} />
+              </button>
+            )}
+
+            {onSpeak && (
+              <button
+                type="button"
+                onClick={() => onSpeak(message.content, message.id)}
+                className={`btn-action-icon ${isSpeakingThis ? 'active-speaking' : ''}`}
+                title={isSpeakingThis ? 'Stop reading aloud' : 'Read response aloud'}
+              >
+                {isSpeakingThis ? <Square size={13} /> : <Volume2 size={14} />}
               </button>
             )}
           </div>

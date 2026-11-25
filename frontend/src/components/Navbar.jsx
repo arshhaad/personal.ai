@@ -1,10 +1,12 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
-import { Sparkles, LogOut, LogIn } from 'lucide-react';
-import InstallButton from './pwa/InstallButton';
+import ConfirmModal from './common/ConfirmModal';
+import { Brain, LogOut, LogIn } from 'lucide-react';
 
 export default function Navbar() {
   const { user, isAuthenticated, logout, appName } = useAuth();
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const avatarUrl = user?.avatar_url || user?.profile?.avatar_url;
   const displayName = user?.first_name || user?.username || 'User';
 
@@ -13,13 +15,12 @@ export default function Navbar() {
       <div className="nav-container">
         <Link to="/" className="nav-logo">
           <div className="logo-icon-box">
-            <Sparkles size={20} className="logo-sparkle" />
+            <Brain size={18} className="logo-brain-icon" />
           </div>
           <span className="logo-text">{appName || 'Personal AI'}</span>
         </Link>
 
         <nav className="nav-links">
-          <InstallButton variant="header" label="Install" />
           {isAuthenticated ? (
             <div className="nav-user-controls">
               <div className="user-mini-pill">
@@ -39,7 +40,7 @@ export default function Navbar() {
               </div>
               <button
                 type="button"
-                onClick={logout}
+                onClick={() => setShowLogoutConfirm(true)}
                 className="btn-nav-logout"
                 title="Sign Out"
               >
@@ -55,6 +56,19 @@ export default function Navbar() {
           )}
         </nav>
       </div>
+
+      <ConfirmModal
+        isOpen={showLogoutConfirm}
+        title="Log out of Personal AI"
+        message="Are you sure you want to log out of your current session?"
+        confirmText="Log Out"
+        variant="logout"
+        onConfirm={() => {
+          setShowLogoutConfirm(false);
+          logout();
+        }}
+        onCancel={() => setShowLogoutConfirm(false)}
+      />
     </header>
   );
 }

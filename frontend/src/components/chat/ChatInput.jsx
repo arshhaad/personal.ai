@@ -1,8 +1,17 @@
 import { useState, useRef, useEffect } from 'react';
-import { ArrowUp, Plus, Loader2, FileText, Check, X, AlertCircle } from 'lucide-react';
+import { ArrowUp, Plus, Loader2, FileText, Check, X, AlertCircle, Mic } from 'lucide-react';
 import { personalizationService } from '../../services/personalizationService';
+import { useVoiceAssistant } from '../../hooks/useVoiceAssistant';
+import { useToast } from '../../context/useToast';
 
-export default function ChatInput({ onSendMessage, disabled, placeholder, onDocumentUploaded }) {
+export default function ChatInput({
+  onSendMessage,
+  disabled,
+  placeholder,
+  onDocumentUploaded,
+  voiceEnabled = true,
+}) {
+  const { showToast } = useToast();
   const [content, setContent] = useState('');
   const [attachedDoc, setAttachedDoc] = useState(null); // { name, size, status: 'uploading'|'completed'|'error', progress: 0 }
   const [uploadError, setUploadError] = useState(null);
@@ -10,6 +19,47 @@ export default function ChatInput({ onSendMessage, disabled, placeholder, onDocu
   const textareaRef = useRef(null);
   const fileInputRef = useRef(null);
   const isSubmittingRef = useRef(false);
+  const preVoiceTextRef = useRef('');
+  const hadTypedBeforeVoiceRef = useRef(false);
+
+  const {
+    isListening,
+    startListening,
+    stopListening,
+    cancelListening,
+  } = useVoiceAssistant({
+    onTranscript: (transcript) => {
+      if (!transcript) return;
+      const prefix = preVoiceTextRef.current.trimEnd();
+      setContent(prefix ? `${prefix} ${transcript}` : transcript);
+    },
+    onSpeechEnd: (finalTranscript) => {
+      const prefix = preVoiceTextRef.current.trimEnd();
+      const combined = (prefix ? `${prefix} ${finalTranscript}` : finalTranscript).trim();
+      preVoiceTextRef.current = '';
+
+      if (!combined || disabled || isSubmittingRef.current) return;
+
+      // When user started a fresh voice query (empty box), send right away so AI answers with text
+      if (!hadTypedBeforeVoiceRef.current && !(attachedDoc && attachedDoc.status === 'uploading')) {
+        isSubmittingRef.current = true;
+        setTimeout(() => {
+          isSubmittingRef.current = false;
+        }, 400);
+        onSendMessage(combined);
+        setContent('');
+        setAttachedDoc(null);
+        setUploadError(null);
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto';
+        }
+      }
+    },
+    onError: (msg) => {
+      preVoiceTextRef.current = '';
+      showToast(msg, 'error', 3500);
+    },
+  });
 
   // Auto-resize textarea height
   useEffect(() => {
@@ -40,6 +90,10 @@ export default function ChatInput({ onSendMessage, disabled, placeholder, onDocu
       isSubmittingRef.current = false;
     }, 400);
 
+    if (isListening) {
+      cancelListening();
+    }
+
     onSendMessage(messageToSend);
     setContent('');
     setAttachedDoc(null);
@@ -55,6 +109,16 @@ export default function ChatInput({ onSendMessage, disabled, placeholder, onDocu
       e.preventDefault();
       handleSubmit();
     }
+  };
+
+  const handleMicToggle = () => {
+    if (isListening) {
+      stopListening();
+      return;
+    }
+    preVoiceTextRef.current = content;
+    hadTypedBeforeVoiceRef.current = content.trim().length > 0;
+    startListening();
   };
 
   const handlePlusClick = () => {
@@ -201,14 +265,31 @@ export default function ChatInput({ onSendMessage, disabled, placeholder, onDocu
             onChange={(e) => setContent(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={
-              attachedDoc && attachedDoc.status === 'completed'
-                ? `Ask anything about "${attachedDoc.name}"...`
-                : placeholder || 'Ask anything...'
+              isListening
+                ? 'Listening to your voice...'
+                : attachedDoc && attachedDoc.status === 'completed'
+                  ? `Ask anything about "${attachedDoc.name}"...`
+                  : placeholder || 'Ask anything or tap mic to speak...'
             }
             rows={1}
             disabled={disabled}
             className="chat-textarea"
           />
+
+          {/* Voice Speak-to-Text Mic */}
+          {voiceEnabled && (
+            <button
+              type="button"
+              onClick={handleMicToggle}
+              disabled={disabled}
+              className={`btn-chat-mic ${isListening ? 'listening' : ''}`}
+              title={isListening ? 'Stop speaking & send' : 'Speak to text'}
+              aria-label={isListening ? 'Stop speaking' : 'Speak to text'}
+              aria-pressed={isListening}
+            >
+              <Mic size={17} />
+            </button>
+          )}
 
           {/* Submit Arrow Button */}
           <button

@@ -1,5 +1,7 @@
 from io import BytesIO
+from datetime import datetime, timedelta, timezone as dt_timezone
 from unittest.mock import patch
+from django.utils import timezone
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase
 from django.contrib.auth.models import User
@@ -16,6 +18,11 @@ from .models import (
     ApplicationSettings,
     Conversation,
     Message,
+    GoogleCalendarIntegration,
+    GmailIntegration,
+    Notification,
+    Reminder,
+    ReminderHistory,
 )
 
 
@@ -592,3 +599,428 @@ class GoogleDriveIntegrationTests(TestCase):
         self.assertTrue(res.data['is_api_disabled'])
         self.assertEqual(res.data['project_id'], '285108715643')
         self.assertIn('console.developers.google.com', res.data['enable_url'])
+
+
+class AdvancedIntegrationsTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username="integrations_user",
+            email="integrations@example.com",
+            password="testpassword123",
+            first_name="Alex",
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def test_calendar_status_and_validation(self):
+        status_res = self.client.get('/api/integrations/calendar/status/')
+        self.assertEqual(status_res.status_code, status.HTTP_200_OK)
+        self.assertFalse(status_res.data['is_connected'])
+
+        # Creating event when disconnected returns 400
+        res_disconnected = self.client.post('/api/integrations/calendar/events/', {
+            'summary': 'Team Sync',
+            'start_time': '2026-12-01T10:00:00Z',
+            'end_time': '2026-12-01T11:00:00Z',
+        }, format='json')
+        self.assertEqual(res_disconnected.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # Connect calendar directly via access_token
+        with patch('ai_company.views.fetch_google_account_profile', return_value={'email': 'cal@example.com', 'display_name': 'Alex'}):
+            connect_res = self.client.post('/api/integrations/calendar/connect/', {
+                'access_token': 'mock_cal_token',
+            }, format='json')
+        self.assertEqual(connect_res.status_code, status.HTTP_200_OK)
+        self.assertTrue(connect_res.data['data']['is_connected'])
+
+        # Validation: end_time before start_time must fail with 400
+        bad_event_res = self.client.post('/api/integrations/calendar/events/', {
+            'summary': 'Invalid Window',
+            'start_time': '2026-12-01T12:00:00Z',
+            'end_time': '2026-12-01T11:00:00Z',
+        }, format='json')
+        self.assertEqual(bad_event_res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('end_time', bad_event_res.data)
+
+    @patch('ai_company.views.create_calendar_event')
+    def test_calendar_event_creation_creates_notification(self, mock_create):
+        cal, _ = GoogleCalendarIntegration.objects.get_or_create(user=self.user)
+        cal.is_connected = True
+        cal.access_token = 'valid_token'
+        cal.calendar_email = 'cal@example.com'
+        cal.save()
+
+        mock_create.return_value = {
+            'id': 'evt_123',
+            'summary': 'Sprint Planning',
+            'start': '2026-12-01T10:00:00Z',
+            'end': '2026-12-01T11:00:00Z',
+            'location': 'Meet',
+            'html_link': 'https://calendar.google.com/event?eid=123',
+        }
+
+        res = self.client.post('/api/integrations/calendar/events/', {
+            'summary': 'Sprint Planning',
+            'start_time': '2026-12-01T10:00:00Z',
+            'end_time': '2026-12-01T11:00:00Z',
+            'location': 'Meet',
+        }, format='json')
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res.data['event']['id'], 'evt_123')
+        self.assertTrue(Notification.objects.filter(user=self.user, category='calendar').exists())
+
+    def test_gmail_send_validation_and_success(self):
+        gmail, _ = GmailIntegration.objects.get_or_create(user=self.user)
+        gmail.is_connected = True
+        gmail.access_token = 'valid_gmail_token'
+        gmail.gmail_address = 'alex@example.com'
+        gmail.save()
+
+        # Invalid recipient email fails validation
+        bad_email = self.client.post('/api/integrations/gmail/send/', {
+            'to': 'not-an-email',
+            'subject': 'Hello',
+            'body': 'Body content',
+        }, format='json')
+        self.assertEqual(bad_email.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('to', bad_email.data)
+
+        # Blank subject fails validation
+        blank_subject = self.client.post('/api/integrations/gmail/send/', {
+            'to': 'friend@example.com',
+            'subject': '   ',
+            'body': 'Body content',
+        }, format='json')
+        self.assertEqual(blank_subject.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('subject', blank_subject.data)
+
+        with patch('ai_company.views.send_gmail_message', return_value={
+            'id': 'msg_99',
+            'to': 'friend@example.com',
+            'subject': 'Hello World',
+        }):
+            ok_res = self.client.post('/api/integrations/gmail/send/', {
+                'to': 'friend@example.com',
+                'subject': 'Hello World',
+                'body': 'Testing integrated send.',
+            }, format='json')
+        self.assertEqual(ok_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(ok_res.data['sent']['id'], 'msg_99')
+        self.assertTrue(Notification.objects.filter(user=self.user, category='email').exists())
+
+    def test_workspace_connect_same_account_and_mismatch_rejection(self):
+        # Mismatched Google account email must be rejected
+        with patch('ai_company.views.fetch_google_account_profile', return_value={'email': 'other@example.com', 'display_name': 'Other'}), \
+             patch('ai_company.views.fetch_gmail_profile', return_value='other@example.com'):
+            mismatch_res = self.client.post('/api/integrations/workspace/connect/', {
+                'access_token': 'mock_token',
+            }, format='json')
+        self.assertEqual(mismatch_res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('integrations@example.com', mismatch_res.data['error'])
+
+        # Same signed-in account connects both Calendar and Gmail together
+        with patch('ai_company.views.fetch_google_account_profile', return_value={'email': 'integrations@example.com', 'display_name': 'Alex'}), \
+             patch('ai_company.views.fetch_gmail_profile', return_value='integrations@example.com'):
+            ok_res = self.client.post('/api/integrations/workspace/connect/', {
+                'access_token': 'mock_same_acct_token',
+            }, format='json')
+        self.assertEqual(ok_res.status_code, status.HTTP_200_OK)
+        self.assertTrue(ok_res.data['calendar']['is_connected'])
+        self.assertEqual(ok_res.data['calendar']['calendar_email'], 'integrations@example.com')
+        self.assertTrue(ok_res.data['gmail']['is_connected'])
+        self.assertEqual(ok_res.data['gmail']['gmail_address'], 'integrations@example.com')
+
+    @patch('ai_company.services.exchange_code_for_tokens')
+    @patch('ai_company.services.fetch_user_info_via_access_token')
+    def test_google_login_auto_connects_calendar_and_gmail(self, mock_fetch_user, mock_exchange):
+        mock_exchange.return_value = {
+            'access_token': 'login_ws_access',
+            'refresh_token': 'login_ws_refresh',
+            'expires_in': 3600,
+            'scope': 'openid email profile https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/gmail.readonly',
+        }
+        mock_fetch_user.return_value = {
+            'sub': 'google_ws_123',
+            'email': 'singleacct@personalai.app',
+            'name': 'Sam User',
+        }
+
+        unauth_client = APIClient()
+        res = unauth_client.post('/api/auth/google/', {'code': 'auth_code_with_ws'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        ws_user = User.objects.get(email='singleacct@personalai.app')
+        self.assertTrue(ws_user.google_calendar.is_connected)
+        self.assertEqual(ws_user.google_calendar.calendar_email, 'singleacct@personalai.app')
+        self.assertTrue(ws_user.gmail_integration.is_connected)
+        self.assertEqual(ws_user.gmail_integration.gmail_address, 'singleacct@personalai.app')
+
+    def test_web_search_validation_and_chat_grounding(self):
+        # Query < 2 chars fails validation
+        bad_search = self.client.post('/api/integrations/web-search/', {'query': 'a'}, format='json')
+        self.assertEqual(bad_search.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # Disabled web search blocks endpoint with 403
+        settings_obj, _ = ApplicationSettings.objects.get_or_create(user=self.user)
+        settings_obj.web_search_enabled = False
+        settings_obj.save()
+
+        disabled_res = self.client.post('/api/integrations/web-search/', {'query': 'Django REST'}, format='json')
+        self.assertEqual(disabled_res.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Re-enable and test mocked search + chat grounding
+        settings_obj.web_search_enabled = True
+        settings_obj.save()
+
+        mocked_results = [
+            {
+                'title': 'Django Official Docs',
+                'url': 'https://www.djangoproject.com/',
+                'snippet': 'Django makes it easier to build better web apps.',
+            }
+        ]
+        with patch('ai_company.views.perform_web_search', return_value=mocked_results):
+            search_res = self.client.post('/api/integrations/web-search/', {'query': 'Django framework', 'max_results': 3}, format='json')
+        self.assertEqual(search_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(search_res.data['count'], 1)
+        self.assertEqual(search_res.data['results'][0]['title'], 'Django Official Docs')
+
+        conv = Conversation.objects.create(user=self.user, title='Web Search Chat')
+        with patch('ai_company.ai_service.perform_web_search', return_value=mocked_results), \
+             patch('ai_company.ai_service.call_groq_llm', return_value='Based on live search, [Django Official Docs](https://www.djangoproject.com/).'):
+            msg_res = self.client.post(f'/api/conversations/{conv.id}/messages/', {
+                'content': 'What is Django?',
+                'use_web_search': True,
+            }, format='json')
+        self.assertEqual(msg_res.status_code, status.HTTP_201_CREATED)
+        self.assertIn('Django Official Docs', msg_res.data['assistant_message']['content'])
+
+    def test_voice_settings_validation_and_notifications_lifecycle(self):
+        # Voice rate outside 0.5..2.0 fails validation
+        bad_voice = self.client.patch('/api/settings/', {'voice_rate': 3.5}, format='json')
+        self.assertEqual(bad_voice.status_code, status.HTTP_400_BAD_REQUEST)
+
+        good_voice = self.client.patch('/api/settings/', {
+            'voice_enabled': True,
+            'voice_auto_speak': True,
+            'voice_rate': 1.4,
+        }, format='json')
+        self.assertEqual(good_voice.status_code, status.HTTP_200_OK)
+        self.assertTrue(good_voice.data['voice_auto_speak'])
+        self.assertAlmostEqual(good_voice.data['voice_rate'], 1.4, places=2)
+
+        n1 = Notification.objects.create(user=self.user, title='Doc Ready', message='PDF ready', category='document')
+        n2 = Notification.objects.create(user=self.user, title='Meeting Soon', message='Standup in 10m', category='calendar')
+
+        list_res = self.client.get('/api/notifications/')
+        self.assertEqual(list_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(list_res.data['unread_count'], 2)
+
+        read_one = self.client.post(f'/api/notifications/{n1.id}/read/')
+        self.assertEqual(read_one.status_code, status.HTTP_200_OK)
+        self.assertTrue(read_one.data['is_read'])
+
+        read_all = self.client.post('/api/notifications/read-all/')
+        self.assertEqual(read_all.status_code, status.HTTP_200_OK)
+        self.assertEqual(read_all.data['updated_count'], 1)
+
+        del_one = self.client.delete(f'/api/notifications/{n2.id}/')
+        self.assertEqual(del_one.status_code, status.HTTP_200_OK)
+
+        clear_res = self.client.post('/api/notifications/clear/')
+        self.assertEqual(clear_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(Notification.objects.filter(user=self.user).count(), 0)
+
+
+class ReminderSystemTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username="reminder_user",
+            email="reminder@example.com",
+            password="testpassword123",
+            first_name="Maya",
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def test_create_reminder_validation_and_timezone_scheduling(self):
+        # Blank title rejected
+        res_blank = self.client.post('/api/reminders/', {
+            'title': '   ',
+            'scheduled_at': (timezone.now() + timedelta(hours=2)).isoformat(),
+            'timezone_name': 'Asia/Kolkata',
+        }, format='json')
+        self.assertEqual(res_blank.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('title', res_blank.data)
+
+        # Invalid timezone rejected
+        res_bad_tz = self.client.post('/api/reminders/', {
+            'title': 'Check Timezone',
+            'scheduled_at': (timezone.now() + timedelta(hours=2)).isoformat(),
+            'timezone_name': 'Invalid/Nowhere',
+        }, format='json')
+        self.assertEqual(res_bad_tz.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('timezone_name', res_bad_tz.data)
+
+        # Past date rejected
+        res_past = self.client.post('/api/reminders/', {
+            'title': 'Yesterday task',
+            'scheduled_at': (timezone.now() - timedelta(hours=2)).isoformat(),
+            'timezone_name': 'UTC',
+        }, format='json')
+        self.assertEqual(res_past.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('scheduled_at', res_past.data)
+
+        # Valid local wall-clock scheduling with IANA timezone
+        from zoneinfo import ZoneInfo
+        local_future = (timezone.now().astimezone(ZoneInfo('Asia/Kolkata')) + timedelta(hours=3)).replace(second=0, microsecond=0)
+        res_ok = self.client.post('/api/reminders/', {
+            'title': 'Attend project meeting',
+            'message': 'Bring sprint demo slides',
+            'scheduled_at': local_future.strftime('%Y-%m-%dT%H:%M'),
+            'timezone_name': 'Asia/Kolkata',
+            'recurrence': 'daily',
+        }, format='json')
+        self.assertEqual(res_ok.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(res_ok.data['title'], 'Attend project meeting')
+        self.assertEqual(res_ok.data['timezone_name'], 'Asia/Kolkata')
+        self.assertEqual(res_ok.data['recurrence'], 'daily')
+        self.assertEqual(res_ok.data['status'], 'pending')
+
+    def test_due_reminder_creates_notification_and_history_without_duplicates(self):
+        due_time = timezone.now() - timedelta(seconds=30)
+        rem = Reminder.objects.create(
+            user=self.user,
+            title='Study Python',
+            message='Review async/await decorators',
+            scheduled_at=due_time,
+            timezone_name='UTC',
+            recurrence='none',
+            status='pending',
+        )
+
+        # First poll triggers notification & triggered history log
+        first_poll = self.client.get('/api/notifications/')
+        self.assertEqual(first_poll.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(first_poll.data['newly_triggered_reminders']), 1)
+        self.assertEqual(Notification.objects.filter(user=self.user, category='reminder').count(), 1)
+        self.assertEqual(ReminderHistory.objects.filter(user=self.user, reminder=rem, event_type='triggered').count(), 1)
+
+        # Second poll must NOT duplicate notification or triggered history
+        second_poll = self.client.get('/api/notifications/')
+        self.assertEqual(second_poll.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(second_poll.data['newly_triggered_reminders']), 0)
+        self.assertEqual(Notification.objects.filter(user=self.user, category='reminder').count(), 1)
+
+    def test_snooze_validation_and_rescheduling(self):
+        rem = Reminder.objects.create(
+            user=self.user,
+            title='Standup Call',
+            scheduled_at=timezone.now() - timedelta(minutes=1),
+            notified_for_at=timezone.now() - timedelta(minutes=1),
+            timezone_name='UTC',
+        )
+
+        # Only 5, 10, 30 allowed
+        bad_snooze = self.client.post(f'/api/reminders/{rem.id}/snooze/', {'minutes': 15}, format='json')
+        self.assertEqual(bad_snooze.status_code, status.HTTP_400_BAD_REQUEST)
+
+        before = timezone.now()
+        ok_snooze = self.client.post(f'/api/reminders/{rem.id}/snooze/', {'minutes': 10}, format='json')
+        self.assertEqual(ok_snooze.status_code, status.HTTP_200_OK)
+        rem.refresh_from_db()
+        self.assertIsNone(rem.notified_for_at)
+        self.assertGreaterEqual(rem.scheduled_at, before + timedelta(minutes=9))
+        self.assertTrue(ReminderHistory.objects.filter(reminder=rem, event_type='snoozed').exists())
+
+    def test_mark_done_one_time_and_recurring_monthly(self):
+        from ai_company.reminder_service import compute_next_occurrence
+
+        # Month-end clamping: Jan 31 -> Feb 28 in non-leap year 2026
+        jan_31 = datetime(2026, 1, 31, 9, 0, tzinfo=dt_timezone.utc)
+        next_feb = compute_next_occurrence(jan_31, 'monthly', 'UTC', reference_now=jan_31)
+        self.assertEqual((next_feb.year, next_feb.month, next_feb.day, next_feb.hour), (2026, 2, 28, 9))
+
+        # Recurring weekly reminder advances cleanly on complete
+        future_dt = timezone.now() + timedelta(hours=1)
+        rec_rem = Reminder.objects.create(
+            user=self.user,
+            title='Weekly Sync',
+            scheduled_at=future_dt,
+            timezone_name='UTC',
+            recurrence='weekly',
+        )
+        res_rec = self.client.post(f'/api/reminders/{rec_rem.id}/complete/')
+        self.assertEqual(res_rec.status_code, status.HTTP_200_OK)
+        self.assertTrue(res_rec.data['rescheduled'])
+        rec_rem.refresh_from_db()
+        self.assertEqual(rec_rem.status, 'pending')
+        self.assertGreaterEqual(rec_rem.scheduled_at, future_dt + timedelta(days=6))
+
+        # One-time reminder marks completed
+        one_rem = Reminder.objects.create(
+            user=self.user,
+            title='Submit report',
+            scheduled_at=future_dt,
+            timezone_name='UTC',
+            recurrence='none',
+        )
+        res_one = self.client.post(f'/api/reminders/{one_rem.id}/complete/')
+        self.assertEqual(res_one.status_code, status.HTTP_200_OK)
+        self.assertFalse(res_one.data['rescheduled'])
+        one_rem.refresh_from_db()
+        self.assertEqual(one_rem.status, 'completed')
+        self.assertEqual(ReminderHistory.objects.filter(user=self.user, event_type='completed').count(), 2)
+
+        # Delete & clear history
+        del_res = self.client.delete(f'/api/reminders/{one_rem.id}/')
+        self.assertEqual(del_res.status_code, status.HTTP_200_OK)
+        clear_res = self.client.post('/api/reminders/history/clear/')
+        self.assertEqual(clear_res.status_code, status.HTTP_200_OK)
+        self.assertEqual(ReminderHistory.objects.filter(user=self.user).count(), 0)
+
+
+class MessageEditTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username="edit_user",
+            email="edit@example.com",
+            password="testpassword123",
+        )
+        self.other_user = User.objects.create_user(
+            username="other_edit_user",
+            email="other@example.com",
+            password="testpassword123",
+        )
+        self.client.force_authenticate(user=self.user)
+
+    @patch('ai_company.views.generate_ai_response', return_value='Updated reply from AI')
+    def test_edit_user_message_prunes_stale_replies_and_regenerates(self, mock_ai):
+        conv = Conversation.objects.create(user=self.user, title='Original prompt')
+        u1 = Message.objects.create(conversation=conv, role='user', content='Original question')
+        a1 = Message.objects.create(conversation=conv, role='assistant', content='Old AI reply')
+        u2 = Message.objects.create(conversation=conv, role='user', content='Follow up')
+        a2 = Message.objects.create(conversation=conv, role='assistant', content='Old follow-up reply')
+
+        # Blank edit fails validation
+        bad_res = self.client.patch(f'/api/conversations/{conv.id}/messages/{u1.id}/', {'content': '   '}, format='json')
+        self.assertEqual(bad_res.status_code, status.HTTP_400_BAD_REQUEST)
+
+        # Cannot edit assistant messages
+        asst_res = self.client.patch(f'/api/conversations/{conv.id}/messages/{a1.id}/', {'content': 'Hacked'}, format='json')
+        self.assertEqual(asst_res.status_code, status.HTTP_404_NOT_FOUND)
+
+        # Valid edit updates u1, deletes a1/u2/a2, and appends fresh AI reply
+        res = self.client.patch(f'/api/conversations/{conv.id}/messages/{u1.id}/', {'content': 'Edited question'}, format='json')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        u1.refresh_from_db()
+        self.assertEqual(u1.content, 'Edited question')
+        self.assertEqual(res.data['assistant_message']['content'], 'Updated reply from AI')
+        self.assertFalse(Message.objects.filter(pk__in=[a1.id, u2.id, a2.id]).exists())
+        self.assertEqual(conv.messages.count(), 2)
+        mock_ai.assert_called_once()
+
+        # Other user cannot edit
+        self.client.force_authenticate(user=self.other_user)
+        forbidden = self.client.patch(f'/api/conversations/{conv.id}/messages/{u1.id}/', {'content': 'Steal'}, format='json')
+        self.assertEqual(forbidden.status_code, status.HTTP_404_NOT_FOUND)

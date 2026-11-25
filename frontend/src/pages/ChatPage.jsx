@@ -3,12 +3,16 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
 import { chatService } from '../services/chatService';
 import { personalizationService } from '../services/personalizationService';
+import { reminderService } from '../services/reminderService';
 import Sidebar from '../components/chat/Sidebar';
 import ChatMessage from '../components/chat/ChatMessage';
 import ChatInput from '../components/chat/ChatInput';
 import ChatEmptyState from '../components/chat/ChatEmptyState';
-import InstallButton from '../components/pwa/InstallButton';
-import { Menu, Plus, Loader2, Sparkles, Sun, Moon, PanelLeft } from 'lucide-react';
+import NotificationBell from '../components/notifications/NotificationBell';
+import { triggerDesktopNotification } from '../utils/desktopNotification';
+import { playNotificationChord } from '../utils/notificationSound';
+import { useVoiceAssistant } from '../hooks/useVoiceAssistant';
+import { Menu, Plus, Loader2, Brain, Sun, Moon, PanelLeft } from 'lucide-react';
 import { useTheme } from '../context/useTheme';
 import { useToast } from '../context/useToast';
 
@@ -30,6 +34,22 @@ export default function ChatPage() {
   });
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [docCount, setDocCount] = useState(0);
+  const [reminderCount, setReminderCount] = useState(0);
+  const [integrationPrefs, setIntegrationPrefs] = useState({
+    voice_enabled: true,
+    voice_auto_speak: false,
+    voice_rate: 1.0,
+    notifications_enabled: true,
+  });
+
+  const {
+    ttsSupported,
+    isSpeaking,
+    speakingId,
+    speak,
+  } = useVoiceAssistant({
+    onError: (msg) => showToast(msg, 'error', 3000),
+  });
 
   const messagesEndRef = useRef(null);
   const isSendingRef = useRef(false);
@@ -101,8 +121,38 @@ export default function ChatPage() {
       .catch((err) => {
         console.error('Failed to load document count:', err);
       });
+
+    personalizationService.getSettings()
+      .then((settings) => {
+        if (isMounted && settings) {
+          setIntegrationPrefs({
+            voice_enabled: settings.voice_enabled ?? true,
+            voice_auto_speak: settings.voice_auto_speak ?? false,
+            voice_rate: settings.voice_rate ?? 1.0,
+            notifications_enabled: settings.notifications_enabled ?? true,
+          });
+        }
+      })
+      .catch(() => {
+        // fallback to defaults
+      });
+
+    const loadReminderCount = () => {
+      reminderService.getReminders()
+        .then((data) => {
+          if (isMounted && typeof data?.upcoming_count === 'number') {
+            setReminderCount(data.upcoming_count);
+          }
+        })
+        .catch(() => {});
+    };
+
+    loadReminderCount();
+    window.addEventListener('reminders-updated', loadReminderCount);
+
     return () => {
       isMounted = false;
+      window.removeEventListener('reminders-updated', loadReminderCount);
     };
   }, []);
 
@@ -313,11 +363,81 @@ export default function ChatPage() {
         };
       });
 
+      const willAutoSpeak = Boolean(
+        result.assistant_message &&
+          integrationPrefs.voice_enabled &&
+          integrationPrefs.voice_auto_speak &&
+          ttsSupported
+      );
+
+      if (willAutoSpeak) {
+        speak(result.assistant_message.content, result.assistant_message.id, {
+          rate: integrationPrefs.voice_rate,
+        });
+      }
+
+      if (result.assistant_message && integrationPrefs.notifications_enabled) {
+        if (document.visibilityState === 'hidden') {
+          triggerDesktopNotification(
+            `${appName || 'Personal AI'} replied`,
+            result.assistant_message.content.slice(0, 120),
+            { url: targetConvId ? `/chat/${targetConvId}` : '/chat' }
+          );
+        } else if (!willAutoSpeak) {
+          playNotificationChord();
+        }
+      }
+
       // Refresh sidebar conversations list to update title & timestamp order
       await refreshConversations();
     } catch (err) {
       console.error('Failed to send message:', err);
       showToast('Failed to send message. Please check your connection.', 'error', 3000);
+    } finally {
+      setSending(false);
+      isSendingRef.current = false;
+    }
+  };
+
+  const handleEditMessage = async (messageId, newContent) => {
+    const targetConvId = activeConversation?.id;
+    const trimmed = newContent.trim();
+    if (!targetConvId || !trimmed || sending || isSendingRef.current) return;
+
+    isSendingRef.current = true;
+    setSending(true);
+    try {
+      const result = await chatService.editMessage(targetConvId, messageId, trimmed);
+      if (result.conversation) {
+        setActiveConversation(result.conversation);
+      }
+      const willAutoSpeak = Boolean(
+        result.assistant_message &&
+          integrationPrefs.voice_enabled &&
+          integrationPrefs.voice_auto_speak &&
+          ttsSupported
+      );
+      if (willAutoSpeak) {
+        speak(result.assistant_message.content, result.assistant_message.id, {
+          rate: integrationPrefs.voice_rate,
+        });
+      }
+      if (result.assistant_message && integrationPrefs.notifications_enabled) {
+        if (document.visibilityState === 'hidden') {
+          triggerDesktopNotification(
+            `${appName || 'Personal AI'} replied`,
+            result.assistant_message.content.slice(0, 120),
+            { url: `/chat/${targetConvId}` }
+          );
+        } else if (!willAutoSpeak) {
+          playNotificationChord();
+        }
+      }
+      await refreshConversations();
+    } catch (err) {
+      console.error('Failed to edit message:', err);
+      showToast(err.response?.data?.content?.[0] || 'Failed to update message.', 'error', 3000);
+      throw err;
     } finally {
       setSending(false);
       isSendingRef.current = false;
@@ -343,6 +463,7 @@ export default function ChatPage() {
         onCloseMobile={() => setMobileSidebarOpen(false)}
         loading={loadingList}
         docCount={docCount}
+        reminderCount={reminderCount}
       />
 
       {/* Main Chat Area */}
@@ -371,7 +492,7 @@ export default function ChatPage() {
             )}
 
             <div className="topbar-model-pill">
-              <Sparkles size={14} className="sparkle-active" />
+              <Brain size={14} className="sparkle-active" />
               <span className="model-name">{appName || 'Personal AI'}</span>
             </div>
 
@@ -393,7 +514,7 @@ export default function ChatPage() {
               </button>
             )}
 
-            <InstallButton variant="header" label="Install" />
+            <NotificationBell />
 
             <button
               type="button"
@@ -443,11 +564,20 @@ export default function ChatPage() {
                   message={msg}
                   userAvatar={userAvatar}
                   userName={userName}
+                  onEdit={msg.role === 'user' ? handleEditMessage : undefined}
+                  disabled={sending}
                   onRegenerate={
                     idx === displayMessages.length - 1 && msg.role === 'assistant' && !sending
                       ? handleRegenerateResponse
                       : undefined
                   }
+                  onSpeak={
+                    integrationPrefs.voice_enabled && ttsSupported && msg.role === 'assistant'
+                      ? (textToRead, msgId) =>
+                          speak(textToRead, msgId, { rate: integrationPrefs.voice_rate })
+                      : undefined
+                  }
+                  isSpeakingThis={isSpeaking && String(speakingId) === String(msg.id)}
                 />
               ))}
 
@@ -455,7 +585,7 @@ export default function ChatPage() {
                 <div className="chat-message-row assistant-row thinking-row">
                   <div className="message-avatar">
                     <div className="chat-assistant-avatar thinking">
-                      <Sparkles size={16} />
+                      <Brain size={16} />
                     </div>
                   </div>
                   <div className="message-content-wrapper">
@@ -481,6 +611,7 @@ export default function ChatPage() {
             onSendMessage={handleSendMessage}
             disabled={sending}
             onDocumentUploaded={refreshDocCount}
+            voiceEnabled={integrationPrefs.voice_enabled}
             placeholder={
               activeConversation
                 ? `Message ${appName || 'Personal AI'}...`

@@ -1,48 +1,78 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/useAuth';
 import { useTheme } from '../context/useTheme';
 import { useToast } from '../context/useToast';
 import { personalizationService } from '../services/personalizationService';
 import { googleDriveService } from '../services/googleDriveService';
 import ConnectGoogleDriveModal from '../components/drive/ConnectGoogleDriveModal';
+import ConfirmModal from '../components/common/ConfirmModal';
+import WorkspaceSidebarLayout from '../components/layout/WorkspaceSidebarLayout';
+import InstallButton from '../components/pwa/InstallButton';
+import { requestBrowserNotificationPermission, triggerDesktopNotification } from '../utils/desktopNotification';
 import {
-  ArrowLeft,
-  Settings as SettingsIcon,
+  NOTIFICATION_SOUNDS,
+  isNotificationSoundEnabled,
+  setNotificationSoundEnabled,
+  getNotificationSoundPreset,
+  setNotificationSoundPreset,
+  getNotificationSoundVolume,
+  setNotificationSoundVolume,
+  subscribeNotificationSoundChange,
+  playNotificationChord,
+} from '../utils/notificationSound';
+import {
+  getAllTimezones,
+  getDetectedTimezone,
+  getPreferredTimezone,
+  setPreferredTimezone,
+  subscribeTimezoneChange,
+} from '../utils/timezoneUtils';
+import {
   Sun,
   Moon,
   Laptop,
   Shield,
-  Download,
   Trash2,
-  AlertTriangle,
   Loader2,
-  LogOut,
   ExternalLink,
   FileText,
   RefreshCw,
   FolderCheck,
+  Volume1,
+  Volume2,
+  VolumeX,
+  Bell,
+  Music2,
+  Globe,
+  Play,
+  Check,
 } from 'lucide-react';
 
 export default function SettingsPage() {
-  const navigate = useNavigate();
-  const { user, logout, refreshUserData } = useAuth();
+  const { user, logout } = useAuth();
   const { theme, setTheme: setAppTheme } = useTheme();
   const { showToast } = useToast();
 
   const [isDriveModalOpen, setIsDriveModalOpen] = useState(false);
-  const [disconnectingDrive, setDisconnectingDrive] = useState(false);
 
   const [settings, setSettings] = useState({
     theme: 'dark',
     enter_to_send: true,
     notifications_enabled: false,
-    display_mode: 'comfortable',
-    memory_enabled: true,
   });
 
   const [loading, setLoading] = useState(true);
-  const [exporting, setExporting] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(() => isNotificationSoundEnabled());
+  const [soundPreset, setSoundPreset] = useState(() => getNotificationSoundPreset());
+  const [soundVolume, setSoundVolume] = useState(() => Math.round(getNotificationSoundVolume() * 100));
+  const detectedTimezone = getDetectedTimezone();
+  const timezoneChoices = getAllTimezones(detectedTimezone);
+  const [selectedTimezone, setSelectedTimezone] = useState(() => getPreferredTimezone());
+  const [notifPermission, setNotifPermission] = useState(() =>
+    typeof window !== 'undefined' && 'Notification' in window
+      ? Notification.permission
+      : 'unsupported'
+  );
 
   // App Uploaded Documents & Drive Folder Sync State
   const [appDocs, setAppDocs] = useState([]);
@@ -125,6 +155,86 @@ export default function SettingsPage() {
     };
   }, [setAppTheme, showNotification]);
 
+  useEffect(() => {
+    const unsubSound = subscribeNotificationSoundChange((enabled, preset, volume) => {
+      setSoundEnabled(enabled);
+      if (preset) setSoundPreset(preset);
+      if (typeof volume === 'number') setSoundVolume(Math.round(volume * 100));
+    });
+    const unsubTz = subscribeTimezoneChange((tz) => {
+      if (tz) setSelectedTimezone(tz);
+    });
+    return () => {
+      unsubSound();
+      unsubTz();
+    };
+  }, []);
+
+  const handleVolumeChange = (percent) => {
+    const clamped = Math.min(100, Math.max(0, Number(percent) || 0));
+    setSoundVolume(clamped);
+    setNotificationSoundVolume(clamped / 100);
+  };
+
+  const handleVolumePreview = () => {
+    if (soundEnabled && soundVolume > 0) {
+      playNotificationChord({ force: true, preset: soundPreset, volume: soundVolume / 100 });
+    }
+  };
+
+  const handleToggleNotificationSound = (checked) => {
+    const next = setNotificationSoundEnabled(checked);
+    setSoundEnabled(next);
+    if (next) {
+      playNotificationChord({ force: true, preset: soundPreset });
+      showNotification('Reminder & notification sound enabled.');
+    } else {
+      showNotification('Reminder & notification sound muted.');
+    }
+  };
+
+  const handleSelectSoundPreset = async (presetId) => {
+    setNotificationSoundPreset(presetId);
+    setSoundPreset(presetId);
+    await playNotificationChord({ force: true, preset: presetId });
+    const chosen = NOTIFICATION_SOUNDS.find((s) => s.id === presetId);
+    if (chosen) {
+      showToast(`Selected "${chosen.name}" reminder sound.`, 'info', 2000);
+    }
+  };
+
+  const handleTimezoneChange = (nextTz) => {
+    setSelectedTimezone(nextTz);
+    setPreferredTimezone(nextTz);
+    showNotification(`Time zone updated to ${nextTz}.`);
+  };
+
+  const handleTestChordSound = async () => {
+    const played = await playNotificationChord({ force: true, preset: soundPreset });
+    if (played) {
+      const chosen = NOTIFICATION_SOUNDS.find((s) => s.id === soundPreset);
+      showToast(`Playing "${chosen?.name || 'Chord'}" sound.`, 'info', 2000);
+    } else {
+      showNotification('Audio playback was blocked by the browser. Tap again to enable.', true);
+    }
+  };
+
+  const handleEnableBrowserAlerts = async () => {
+    const perm = await requestBrowserNotificationPermission();
+    setNotifPermission(perm);
+    if (perm === 'granted') {
+      showToast('Web App notifications enabled!', 'success', 3000);
+      triggerDesktopNotification(
+        'Web App Notifications Active',
+        'You will hear the chord chime and receive alerts for reminders and updates.'
+      );
+    } else if (perm === 'denied') {
+      showToast('Browser notifications are blocked in site settings.', 'error', 3500);
+    } else if (perm === 'unsupported') {
+      showToast('Browser notifications are not supported on this device.', 'error', 3000);
+    }
+  };
+
   const formatBytes = (bytes) => {
     if (!bytes || bytes === 0) return '0 B';
     const k = 1024;
@@ -133,28 +243,16 @@ export default function SettingsPage() {
     return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
   };
 
-  const handleDeleteIndividualDoc = async (doc) => {
-    if (!window.confirm(`Are you sure you want to delete "${doc.original_name}"? This will remove it from the app knowledge base and your Google Drive folder.`)) {
-      return;
-    }
-    setDeletingDocId(doc.id);
-    try {
-      const res = await googleDriveService.deleteAppUploadedDocument(doc.id);
-      showNotification(res.message || 'Document deleted.');
-      setAppDocs((prev) => prev.filter((d) => d.id !== doc.id));
-      setAppDocsMeta((prev) => prev ? {
-        ...prev,
-        total_count: Math.max(0, prev.total_count - 1),
-        synced_drive_count: doc.drive_file_id
-          ? Math.max(0, prev.synced_drive_count - 1)
-          : prev.synced_drive_count,
-      } : prev);
-    } catch (err) {
-      console.error('Failed to delete doc:', err);
-      showNotification('Failed to delete document.', true);
-    } finally {
-      setDeletingDocId(null);
-    }
+  const handleDeleteIndividualDoc = (doc) => {
+    setConfirmModal({
+      isOpen: true,
+      type: 'single_app_doc',
+      payload: doc,
+      variant: 'danger',
+      title: 'Delete Uploaded Document',
+      message: `Are you sure you want to delete "${doc.original_name}"? This will permanently remove it from your knowledge base and your Google Drive folder.`,
+      confirmText: 'Delete Document',
+    });
   };
 
   const handleThemeChange = (newTheme) => {
@@ -174,35 +272,13 @@ export default function SettingsPage() {
     }
   };
 
-  // Export Data JSON
-  const handleExportData = async () => {
-    setExporting(true);
-    try {
-      const data = await personalizationService.exportData();
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `personal_ai_backup_${new Date().toISOString().split('T')[0]}.json`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
-      showNotification('Personal data exported successfully.');
-    } catch (err) {
-      console.error('Export error:', err);
-      showNotification('Failed to export personal data.', true);
-    } finally {
-      setExporting(false);
-    }
-  };
-
   // Open confirmation modal for destructive operations
   const openConfirm = (type) => {
     if (type === 'history') {
       setConfirmModal({
         isOpen: true,
         type: 'history',
+        variant: 'danger',
         title: 'Clear Conversation History',
         message: 'Are you sure you want to delete all your conversations? This action cannot be undone.',
         confirmText: 'Clear All Chats',
@@ -211,6 +287,7 @@ export default function SettingsPage() {
       setConfirmModal({
         isOpen: true,
         type: 'app_documents',
+        variant: 'danger',
         title: 'Clear All App Uploaded Documents',
         message: 'This will permanently delete all documents uploaded using this application from your knowledge base and remove them from your Google Drive folder. No other files in your Google Drive will be touched.',
         confirmText: 'Clear App Documents',
@@ -219,6 +296,7 @@ export default function SettingsPage() {
       setConfirmModal({
         isOpen: true,
         type: 'account',
+        variant: 'danger',
         title: 'Delete Personal AI Account',
         message: 'Permanently deletes your account, personal preferences, memories, uploaded documents, and all chats. This action is irreversible.',
         confirmText: 'Permanently Delete My Account',
@@ -229,7 +307,24 @@ export default function SettingsPage() {
   const handleExecuteDestructiveAction = async () => {
     setActionLoading(true);
     try {
-      if (confirmModal.type === 'history') {
+      if (confirmModal.type === 'single_app_doc' && confirmModal.payload) {
+        const doc = confirmModal.payload;
+        setDeletingDocId(doc.id);
+        try {
+          const res = await googleDriveService.deleteAppUploadedDocument(doc.id);
+          showNotification(res.message || 'Document deleted.');
+          setAppDocs((prev) => prev.filter((d) => d.id !== doc.id));
+          setAppDocsMeta((prev) => prev ? {
+            ...prev,
+            total_count: Math.max(0, prev.total_count - 1),
+            synced_drive_count: doc.drive_file_id
+              ? Math.max(0, prev.synced_drive_count - 1)
+              : prev.synced_drive_count,
+          } : prev);
+        } finally {
+          setDeletingDocId(null);
+        }
+      } else if (confirmModal.type === 'history') {
         const res = await personalizationService.clearHistory();
         showNotification(res.message || 'Chat history cleared.');
       } else if (confirmModal.type === 'documents' || confirmModal.type === 'app_documents') {
@@ -251,56 +346,190 @@ export default function SettingsPage() {
     }
   };
 
-  const handleDisconnectDrive = async () => {
-    if (!window.confirm('Disconnect Google Drive from Personal AI?')) return;
-    setDisconnectingDrive(true);
-    try {
-      await googleDriveService.disconnect();
-      await refreshUserData();
-      showToast('Google Drive disconnected.', 'success', 3000);
-    } catch {
-      showToast('Failed to disconnect Google Drive.', 'error', 3000);
-    } finally {
-      setDisconnectingDrive(false);
-    }
-  };
-
   return (
-    <div className="settings-page-container">
-      {/* Header */}
-      <div className="settings-header">
-        <button
-          type="button"
-          onClick={() => navigate('/chat')}
-          className="btn-back-chat"
-          title="Back to Chat"
-        >
-          <ArrowLeft size={16} />
-          <span>Back to Chat</span>
-        </button>
-
-        <div className="settings-title-section">
-          <div className="settings-badge">
-            <SettingsIcon size={16} />
-            <span>Application Settings</span>
-          </div>
+    <WorkspaceSidebarLayout
+      title="Settings"
+      docCountOverride={loadingDocs ? undefined : appDocs.length}
+    >
+      <div className="settings-sections-wrapper">
+        <div className="workspace-page-intro">
           <h1>Settings</h1>
-          <p>Customize app appearance, chat preferences, data privacy, security, and account management.</p>
+          <p>Customize app appearance, chat preferences, uploaded documents, and data management.</p>
         </div>
-      </div>
 
-      {loading ? (
-        <div className="settings-loading-card">
-          <Loader2 size={32} className="animate-spin" />
-          <p>Loading application settings...</p>
-        </div>
-      ) : (
-        <div className="settings-sections-wrapper">
+        {loading ? (
+          <div className="settings-loading-card">
+            <Loader2 size={32} className="animate-spin" />
+            <p>Loading application settings...</p>
+          </div>
+        ) : (
+          <>
           {/* ============================================================== */}
-          {/* SECTION A: APPEARANCE                                          */}
+          {/* SECTION A: REMINDER SOUNDS & TIME ZONE (FIRST SECTION)         */}
           {/* ============================================================== */}
           <div className="settings-body-card">
-            <h3 className="settings-card-title">A. Appearance</h3>
+            <div className="settings-card-header-flex">
+              <div>
+                <h3 className="settings-card-title">A. Reminder Sounds &amp; Time Zone</h3>
+                <p className="settings-card-desc">
+                  Choose from 10 reminder &amp; notification sounds and set your preferred local time zone.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleTestChordSound}
+                className="btn-secondary btn-sm"
+                title="Preview selected reminder sound"
+              >
+                <Play size={14} />
+                <span>Preview</span>
+              </button>
+            </div>
+
+            <div className="settings-rows-list">
+              <div className="setting-toggle-row">
+                <div className="toggle-text-meta">
+                  <span className="toggle-title">Reminder &amp; Notification Sound</span>
+                  <span className="toggle-desc">
+                    {soundEnabled
+                      ? `Sound is active (${NOTIFICATION_SOUNDS.find((s) => s.id === soundPreset)?.name || 'Chord'}).`
+                      : 'Sound is currently muted for reminders and notifications.'}
+                  </span>
+                </div>
+                <div className="setting-inline-controls">
+                  <span className={`sound-state-pill ${soundEnabled ? 'on' : 'muted'}`}>
+                    {soundEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
+                    <span>{soundEnabled ? 'Sound On' : 'Muted'}</span>
+                  </span>
+                  <label className="toggle-switch">
+                    <input
+                      type="checkbox"
+                      checked={soundEnabled}
+                      onChange={(e) => handleToggleNotificationSound(e.target.checked)}
+                    />
+                    <span className="toggle-slider round" />
+                  </label>
+                </div>
+              </div>
+
+              <div className="setting-divider" />
+
+              <div className="setting-toggle-row">
+                <div className="toggle-text-meta">
+                  <span className="toggle-title">Sound Volume</span>
+                  <span className="toggle-desc">
+                    Adjust volume level for reminder and notification chimes.
+                  </span>
+                </div>
+                <div className="sound-volume-control">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next = soundVolume > 0 ? 0 : 80;
+                      handleVolumeChange(next);
+                      if (next > 0 && soundEnabled) {
+                        playNotificationChord({ force: true, preset: soundPreset, volume: next / 100 });
+                      }
+                    }}
+                    className="btn-volume-icon"
+                    title={soundVolume === 0 ? 'Restore volume to 80%' : 'Mute volume to 0%'}
+                    aria-label={soundVolume === 0 ? 'Restore sound volume' : 'Mute sound volume'}
+                  >
+                    {soundVolume === 0 || !soundEnabled ? (
+                      <VolumeX size={16} />
+                    ) : soundVolume < 50 ? (
+                      <Volume1 size={16} />
+                    ) : (
+                      <Volume2 size={16} />
+                    )}
+                  </button>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={5}
+                    value={soundVolume}
+                    onChange={(e) => handleVolumeChange(e.target.value)}
+                    onMouseUp={handleVolumePreview}
+                    onTouchEnd={handleVolumePreview}
+                    onKeyUp={handleVolumePreview}
+                    aria-label="Reminder sound volume"
+                    className="sound-volume-slider"
+                    disabled={!soundEnabled}
+                  />
+                  <span className="sound-volume-badge">{soundEnabled ? `${soundVolume}%` : 'Muted'}</span>
+                </div>
+              </div>
+
+              <div className="setting-divider" />
+
+              <div className="sound-presets-section">
+                <div className="sound-presets-header">
+                  <span className="toggle-title">Select Reminder Sound (10 Best Sounds)</span>
+                  <span className="toggle-desc">Tap any sound below to preview and set it as your reminder chime.</span>
+                </div>
+
+                <div className="reminder-sounds-grid" role="radiogroup" aria-label="Reminder sounds">
+                  {NOTIFICATION_SOUNDS.map((sound, idx) => {
+                    const isSelected = soundPreset === sound.id;
+                    return (
+                      <button
+                        key={sound.id}
+                        type="button"
+                        role="radio"
+                        aria-checked={isSelected}
+                        onClick={() => handleSelectSoundPreset(sound.id)}
+                        className={`sound-preset-card ${isSelected ? 'selected' : ''}`}
+                      >
+                        <div className="sound-preset-left">
+                          <span className="sound-preset-num">{idx + 1}</span>
+                          <div className="sound-preset-meta">
+                            <span className="sound-preset-name">{sound.name}</span>
+                            <span className="sound-preset-desc">{sound.description}</span>
+                          </div>
+                        </div>
+                        <span className="sound-preset-action-icon" aria-hidden="true">
+                          {isSelected ? <Check size={14} /> : <Music2 size={14} />}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="setting-divider" />
+
+              <div className="setting-toggle-row">
+                <div className="toggle-text-meta">
+                  <span className="toggle-title">Reminder Time Zone</span>
+                  <span className="toggle-desc">
+                    Used when scheduling and displaying reminders (Device detected: {detectedTimezone}).
+                  </span>
+                </div>
+                <label className="settings-tz-select-wrap" title="Select reminder time zone">
+                  <Globe size={15} />
+                  <select
+                    aria-label="Reminder time zone"
+                    value={selectedTimezone}
+                    onChange={(e) => handleTimezoneChange(e.target.value)}
+                    className="settings-tz-select"
+                  >
+                    {timezoneChoices.map((tz) => (
+                      <option key={tz} value={tz}>
+                        {tz}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          {/* ============================================================== */}
+          {/* SECTION B: APPEARANCE                                          */}
+          {/* ============================================================== */}
+          <div className="settings-body-card">
+            <h3 className="settings-card-title">B. Appearance</h3>
             <p className="settings-card-desc">Choose how the Personal AI user interface looks on your device.</p>
 
             <div className="appearance-theme-picker">
@@ -337,11 +566,11 @@ export default function SettingsPage() {
           </div>
 
           {/* ============================================================== */}
-          {/* SECTION B: CHAT PREFERENCES                                    */}
+          {/* SECTION C: CHAT & NOTIFICATION PREFERENCES                     */}
           {/* ============================================================== */}
           <div className="settings-body-card">
-            <h3 className="settings-card-title">B. Chat Preferences</h3>
-            <p className="settings-card-desc">Fine-tune message sending behavior and visual display density.</p>
+            <h3 className="settings-card-title">C. Chat &amp; Notification Preferences</h3>
+            <p className="settings-card-desc">Fine-tune message sending and Web App browser alerts.</p>
 
             <div className="settings-rows-list">
               <div className="setting-toggle-row">
@@ -364,7 +593,7 @@ export default function SettingsPage() {
               <div className="setting-toggle-row">
                 <div className="toggle-text-meta">
                   <span className="toggle-title">Message Notifications</span>
-                  <span className="toggle-desc">Receive browser sound or alert when AI finishes long responses.</span>
+                  <span className="toggle-desc">Play your selected notification sound and show an alert when AI finishes responding.</span>
                 </div>
                 <label className="toggle-switch">
                   <input
@@ -380,136 +609,44 @@ export default function SettingsPage() {
 
               <div className="setting-toggle-row">
                 <div className="toggle-text-meta">
-                  <span className="toggle-title">Chat Display Density</span>
-                  <span className="toggle-desc">Choose between standard comfortable spacing or compact message layout.</span>
+                  <span className="toggle-title">Web App &amp; Browser Alerts</span>
+                  <span className="toggle-desc">
+                    {notifPermission === 'granted'
+                      ? 'Browser and installed Web App notifications are enabled.'
+                      : notifPermission === 'denied'
+                        ? 'Notifications are blocked in browser site settings. In-app sound alerts still play.'
+                        : 'Allow native notifications for reminders and background alerts, or install as a Web App.'}
+                  </span>
                 </div>
-                <select
-                  value={settings.display_mode}
-                  onChange={(e) => handleUpdateSetting('display_mode', e.target.value)}
-                  className="setting-select"
-                >
-                  <option value="comfortable">Comfortable Spacing</option>
-                  <option value="compact">Compact View</option>
-                </select>
-              </div>
-            </div>
-          </div>
-
-          {/* ============================================================== */}
-          {/* SECTION C: PRIVACY                                             */}
-          {/* ============================================================== */}
-          <div className="settings-body-card">
-            <h3 className="settings-card-title">C. Privacy</h3>
-            <p className="settings-card-desc">Control what Personal AI remembers and manages in your private environment.</p>
-
-            <div className="settings-rows-list">
-              <div className="setting-toggle-row">
-                <div className="toggle-text-meta">
-                  <span className="toggle-title">Personal Memory Engine</span>
-                  <span className="toggle-desc">Allow Personal AI to reference past context and stored facts during chats.</span>
-                </div>
-                <label className="toggle-switch">
-                  <input
-                    type="checkbox"
-                    checked={settings.memory_enabled}
-                    onChange={(e) => handleUpdateSetting('memory_enabled', e.target.checked)}
-                  />
-                  <span className="toggle-slider round" />
-                </label>
-              </div>
-
-              <div className="setting-divider" />
-
-              <div className="setting-toggle-row">
-                <div className="toggle-text-meta">
-                  <span className="toggle-title">Document Privacy Isolation</span>
-                  <span className="toggle-desc">All uploaded documents and extracted texts are strictly scoped to your User ID and never shared across users.</span>
-                </div>
-                <span className="setting-status-badge">Strict Isolation Active</span>
-              </div>
-            </div>
-          </div>
-
-          {/* ============================================================== */}
-          {/* SECTION D: SECURITY                                            */}
-          {/* ============================================================== */}
-          <div className="settings-body-card">
-            <h3 className="settings-card-title">D. Security</h3>
-            <p className="settings-card-desc">Authentication provider status and active session credentials.</p>
-
-            <div className="settings-rows-list">
-              <div className="setting-toggle-row">
-                <div className="toggle-text-meta">
-                  <span className="toggle-title">Step 1: Google Identity</span>
-                  <span className="toggle-desc">Google verified identity and linked application account.</span>
-                </div>
-                <span className="tag-pill provider">
-                  <Shield size={14} color="#10b981" />
-                  <span>Google Account ({user?.email})</span>
-                </span>
-              </div>
-
-              <div className="setting-divider" />
-
-              <div className="setting-toggle-row">
-                <div className="toggle-text-meta">
-                  <span className="toggle-title">Step 2: Google Drive Connection</span>
-                  <span className="toggle-desc">&ldquo;Allow Personal Assistant AI to create and manage files that you select or create with this application.&rdquo;</span>
-                </div>
-                <div className="setting-action-controls">
-                  {user?.google_drive?.is_connected ? (
-                    <div className="drive-connected-group">
-                      <span className="tag-pill provider">
-                        <Shield size={14} color="#10b981" />
-                        <span>Connected ({user?.google_drive?.drive_email || user?.email})</span>
-                      </span>
-                      <button
-                        type="button"
-                        onClick={handleDisconnectDrive}
-                        className="btn-danger-outline btn-sm"
-                        disabled={disconnectingDrive}
-                      >
-                        {disconnectingDrive ? 'Disconnecting...' : 'Disconnect'}
-                      </button>
-                    </div>
-                  ) : (
+                <div className="setting-inline-controls">
+                  {notifPermission === 'granted' ? (
+                    <span className="drive-connected-pill">
+                      <Bell size={13} />
+                      <span>Alerts On</span>
+                    </span>
+                  ) : notifPermission !== 'unsupported' ? (
                     <button
                       type="button"
-                      onClick={() => setIsDriveModalOpen(true)}
-                      className="btn-primary-action btn-sm"
+                      onClick={handleEnableBrowserAlerts}
+                      className="btn-secondary btn-sm"
                     >
-                      Connect Google Drive
+                      <Volume2 size={14} />
+                      <span>Enable Alerts</span>
                     </button>
-                  )}
+                  ) : null}
+                  <InstallButton variant="landing-small" label="Install Web App" />
                 </div>
-              </div>
-
-              <div className="setting-divider" />
-
-              <div className="setting-toggle-row">
-                <div className="toggle-text-meta">
-                  <span className="toggle-title">Active Session</span>
-                  <span className="toggle-desc">SimpleJWT Refresh Token rotation verified.</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={logout}
-                  className="btn-danger-outline"
-                >
-                  <LogOut size={15} />
-                  <span>Log out of Session</span>
-                </button>
               </div>
             </div>
           </div>
 
           {/* ============================================================== */}
-          {/* SECTION E: APP UPLOADED DOCUMENTS & GOOGLE DRIVE STORAGE        */}
+          {/* SECTION D: APP UPLOADED DOCUMENTS & GOOGLE DRIVE STORAGE        */}
           {/* ============================================================== */}
           <div className="settings-body-card app-docs-settings-card">
             <div className="settings-card-header-flex">
               <div>
-                <h3 className="settings-card-title">E. App Uploaded Documents</h3>
+                <h3 className="settings-card-title">D. App Uploaded Documents</h3>
                 <p className="settings-card-desc">
                   Documents uploaded using this web application are organized and stored directly in your own Google Drive folder.
                 </p>
@@ -657,31 +794,13 @@ export default function SettingsPage() {
           </div>
 
           {/* ============================================================== */}
-          {/* SECTION F: DATA MANAGEMENT                                     */}
+          {/* SECTION E: DATA MANAGEMENT                                     */}
           {/* ============================================================== */}
           <div className="settings-body-card destructive-card">
-            <h3 className="settings-card-title danger-title">F. Data Management</h3>
-            <p className="settings-card-desc">Export your personal data or perform irreversible account cleanup operations.</p>
+            <h3 className="settings-card-title danger-title">E. Data Management</h3>
+            <p className="settings-card-desc">Manage your conversation history, uploaded documents, or permanently delete your account.</p>
 
             <div className="settings-rows-list">
-              <div className="setting-toggle-row">
-                <div className="toggle-text-meta">
-                  <span className="toggle-title">Export All Personal Data</span>
-                  <span className="toggle-desc">Download a complete structured JSON copy of your profile, preferences, memories, documents list, and chat logs.</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleExportData}
-                  disabled={exporting}
-                  className="btn-action secondary"
-                >
-                  {exporting ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
-                  <span>{exporting ? 'Preparing Export...' : 'Export JSON Data'}</span>
-                </button>
-              </div>
-
-              <div className="setting-divider" />
-
               <div className="setting-toggle-row">
                 <div className="toggle-text-meta">
                   <span className="toggle-title">Clear Conversation History</span>
@@ -732,52 +851,28 @@ export default function SettingsPage() {
               </div>
             </div>
           </div>
-        </div>
-      )}
+          </>
+        )}
+      </div>
 
       {/* ============================================================== */}
-      {/* DESTRUCTIVE CONFIRMATION MODAL                                 */}
+      {/* CONFIRMATION MODAL                                             */}
       {/* ============================================================== */}
-      {confirmModal.isOpen && (
-        <div className="modal-backdrop" onClick={() => !actionLoading && setConfirmModal({ ...confirmModal, isOpen: false })}>
-          <div className="modal-card destructive-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="destructive-modal-header">
-              <div className="warning-icon-box">
-                <AlertTriangle size={24} color="#ef4444" />
-              </div>
-              <div>
-                <h3>{confirmModal.title}</h3>
-                <p>{confirmModal.message}</p>
-              </div>
-            </div>
-
-            <div className="modal-footer">
-              <button
-                type="button"
-                disabled={actionLoading}
-                onClick={() => setConfirmModal({ ...confirmModal, isOpen: false })}
-                className="btn-secondary"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                disabled={actionLoading}
-                onClick={handleExecuteDestructiveAction}
-                className="btn-destructive-solid"
-              >
-                {actionLoading ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
-                <span>{confirmModal.confirmText}</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmModal
+        isOpen={confirmModal.isOpen}
+        title={confirmModal.title}
+        message={confirmModal.message}
+        confirmText={confirmModal.confirmText}
+        variant={confirmModal.variant || 'danger'}
+        loading={actionLoading}
+        onConfirm={handleExecuteDestructiveAction}
+        onCancel={() => !actionLoading && setConfirmModal({ isOpen: false, type: null, title: '', message: '', confirmText: '' })}
+      />
       {/* Step 2: Connect Google Drive Modal */}
       <ConnectGoogleDriveModal
         isOpen={isDriveModalOpen}
         onClose={() => setIsDriveModalOpen(false)}
       />
-    </div>
+    </WorkspaceSidebarLayout>
   );
 }

@@ -2,10 +2,10 @@ import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/useAuth';
 import ProfileDropdown from './ProfileDropdown';
-import InstallButton from '../pwa/InstallButton';
 import {
   Brain,
   SquarePen,
+  AlarmClock,
   FileText,
   MessageSquare,
   MoreVertical,
@@ -32,6 +32,7 @@ export default function Sidebar({
   onCloseMobile,
   loading = false,
   docCount = 0,
+  reminderCount = 0,
 }) {
   const navigate = useNavigate();
   const { appName } = useAuth();
@@ -156,6 +157,26 @@ export default function Sidebar({
           >
             <SquarePen size={16} />
             {!isCollapsed && <span>New Chat</span>}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              navigate('/reminders');
+              if (mobileOpen) onCloseMobile();
+            }}
+            className="btn-sidebar-documents btn-sidebar-reminders"
+            title={`Reminders (${reminderCount} upcoming)`}
+          >
+            <div className="sidebar-doc-btn-left">
+              <div className="sidebar-doc-icon-wrap">
+                <AlarmClock size={16} />
+              </div>
+              {!isCollapsed && <span className="sidebar-doc-label">Reminders</span>}
+            </div>
+            {!isCollapsed && reminderCount > 0 && (
+              <span className="sidebar-doc-count-badge">{reminderCount}</span>
+            )}
           </button>
         </div>
 
@@ -327,14 +348,8 @@ export default function Sidebar({
           )}
         </div>
 
-        {/* User Profile Footer Section with Reusable Dropdown & Install Option */}
+        {/* User Profile Footer Section with Reusable Dropdown */}
         <div className="sidebar-footer">
-          <div className="sidebar-install-action">
-            <InstallButton
-              variant={isCollapsed ? 'sidebar-icon' : 'sidebar-full'}
-              label="Install Web App"
-            />
-          </div>
           <ProfileDropdown
             isCollapsed={isCollapsed}
             onSelect={() => {
