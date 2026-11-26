@@ -1,0 +1,83 @@
+services:
+  backend:
+    container_name: personal-ai-backend
+    build:
+      context: ./backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      DJANGO_DEBUG: "False"
+      DJANGO_DB_PATH: /data/db.sqlite3
+      DJANGO_MEDIA_ROOT: /media
+      DJANGO_STATIC_ROOT: /app/staticfiles
+      DJANGO_ALLOWED_HOSTS: "ai.arrsh.shop,13.127.5.62,localhost,127.0.0.1,backend"
+      DJANGO_CSRF_TRUSTED_ORIGINS: "https://ai.arrsh.shop,http://ai.arrsh.shop,http://13.127.5.62"
+      CORS_ALLOWED_ORIGINS: "https://ai.arrsh.shop,http://ai.arrsh.shop,http://13.127.5.62"
+      FRONTEND_URL: "https://ai.arrsh.shop"
+    expose:
+      - "8000"
+    volumes:
+      - backend_data:/data
+      - backend_media:/media
+      - backend_static:/app/staticfiles
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  frontend:
+    container_name: personal-ai-frontend
+    build:
+      context: ./frontend
+      args:
+        VITE_GOOGLE_CLIENT_ID: ${VITE_GOOGLE_CLIENT_ID:-}
+        VITE_API_BASE_URL: ""
+    restart: unless-stopped
+    expose:
+      - "80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  nginx:
+    container_name: personal-ai-nginx
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - certbot_www:/var/www/certbot:ro
+      - certbot_conf:/etc/letsencrypt:ro
+      - backend_media:/var/www/media:ro
+      - backend_static:/var/www/static:ro
+    depends_on:
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_healthy
+
+  certbot:
+    container_name: personal-ai-certbot
+    image: certbot/certbot:latest
+    profiles: ["certbot"]
+    volumes:
+      - certbot_www:/var/www/certbot
+      - certbot_conf:/etc/letsencrypt
+
+volumes:
+  backend_data:
+  backend_media:
+  backend_static:
+  certbot_www:
+  certbot_conf:

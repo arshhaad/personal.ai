@@ -15,12 +15,21 @@ load_dotenv(BASE_DIR.parent / '.env')
 load_dotenv(BASE_DIR / '.env')
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = os.getenv('DJANGO_SECRET_KEY', 'django-insecure-bmtzs9-^yga^a1fohw0pdl#mi)#enfhltwlc0f1r9g!$t8tn5!')
+SECRET_KEY = os.getenv(
+    'DJANGO_SECRET_KEY',
+    os.getenv('SECRET_KEY', 'django-insecure-bmtzs9-^yga^a1fohw0pdl#mi)#enfhltwlc0f1r9g!$t8tn5!')
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv('DJANGO_DEBUG', os.getenv('DEBUG', 'False')).lower() in ('true', '1', 'yes')
 
-ALLOWED_HOSTS = ['*']
+_allowed_hosts_env = os.getenv('DJANGO_ALLOWED_HOSTS', os.getenv('ALLOWED_HOSTS', ''))
+if _allowed_hosts_env.strip():
+    ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_env.split(',') if h.strip()]
+elif DEBUG:
+    ALLOWED_HOSTS = ['*']
+else:
+    ALLOWED_HOSTS = ['ai.arrsh.shop', '13.127.5.62', 'localhost', '127.0.0.1', 'backend']
 
 
 # Application definition
@@ -110,7 +119,9 @@ USE_TZ = True
 
 
 # Static files (CSS, JavaScript, Images)
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
+STATIC_ROOT = Path(os.getenv('DJANGO_STATIC_ROOT', str(BASE_DIR / 'staticfiles')))
+STATIC_ROOT.mkdir(parents=True, exist_ok=True)
 
 # Media files (User uploaded documents)
 MEDIA_URL = '/media/'
@@ -119,8 +130,16 @@ MEDIA_ROOT.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-# CORS Configuration
+# Reverse Proxy / HTTPS Header Support (Nginx)
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+USE_X_FORWARDED_HOST = True
+SECURE_CONTENT_TYPE_NOSNIFF = True
+
+# CORS & CSRF Configuration
 CORS_ALLOWED_ORIGINS = [
+    "https://ai.arrsh.shop",
+    "http://ai.arrsh.shop",
+    "http://13.127.5.62",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:3000",
@@ -134,6 +153,21 @@ if cors_env:
         if cleaned_origin and cleaned_origin not in CORS_ALLOWED_ORIGINS:
             CORS_ALLOWED_ORIGINS.append(cleaned_origin)
 CORS_ALLOW_CREDENTIALS = True
+
+CSRF_TRUSTED_ORIGINS = [
+    "https://ai.arrsh.shop",
+    "http://ai.arrsh.shop",
+    "http://13.127.5.62",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
+csrf_env = os.getenv('DJANGO_CSRF_TRUSTED_ORIGINS', os.getenv('CSRF_TRUSTED_ORIGINS', ''))
+if csrf_env:
+    for origin in csrf_env.split(','):
+        cleaned_origin = origin.strip()
+        if cleaned_origin and cleaned_origin not in CSRF_TRUSTED_ORIGINS:
+            CSRF_TRUSTED_ORIGINS.append(cleaned_origin)
 
 # REST Framework Configuration
 REST_FRAMEWORK = {

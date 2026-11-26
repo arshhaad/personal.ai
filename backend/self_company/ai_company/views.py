@@ -1,4 +1,5 @@
 import logging
+import os
 from datetime import timedelta
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -108,10 +109,8 @@ class GoogleAuthInitView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request):
-        redirect_uri = request.query_params.get(
-            'redirect_uri',
-            'http://localhost:5173/auth/callback'
-        )
+        default_cb = os.getenv('FRONTEND_URL', 'http://localhost:5173').rstrip('/') + '/auth/callback'
+        redirect_uri = request.query_params.get('redirect_uri', default_cb)
         url, state = generate_google_auth_url(redirect_uri)
         return Response({
             'url': url,
@@ -127,7 +126,8 @@ class GoogleCallbackView(APIView):
 
     def post(self, request):
         code = request.data.get('code')
-        redirect_uri = request.data.get('redirect_uri', 'http://localhost:5173/auth/callback')
+        default_cb = os.getenv('FRONTEND_URL', 'http://localhost:5173').rstrip('/') + '/auth/callback'
+        redirect_uri = request.data.get('redirect_uri', default_cb)
 
         if not code:
             return Response(
