@@ -50,7 +50,7 @@ export default function GoogleDriveFilePickerModal({
       const url = match ? match[1].replace(/[.,)"']+$/, '') : 'https://console.developers.google.com/apis/api/drive.googleapis.com/overview';
       setApiDisabledInfo({
         enableUrl: url,
-        projectId: '285108715643',
+        projectId: '460652540616',
       });
       setErrorMessage('Google Drive API is disabled in your Google Cloud Console project. Please enable it in Google Cloud Console.');
       return;
