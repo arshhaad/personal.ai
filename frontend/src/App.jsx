@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { Component, useEffect, useState } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { GoogleOAuthProvider } from '@react-oauth/google';
 import { AuthProvider } from './context/AuthContext';
@@ -7,6 +7,7 @@ import { ToastProvider } from './context/ToastContext';
 import { PWAInstallProvider } from './context/PWAInstallContext';
 import { useAuth } from './context/useAuth';
 import { initAudioUnlock, playNotificationChord } from './utils/notificationSound';
+import api from './services/api';
 import Navbar from './components/Navbar';
 import ProtectedRoute from './components/auth/ProtectedRoute';
 import LoginPage from './pages/LoginPage';
@@ -23,7 +24,39 @@ import ConnectGoogleDriveModal from './components/drive/ConnectGoogleDriveModal'
 import { Loader2 } from 'lucide-react';
 import './App.css';
 
-const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+const BUILD_GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
+
+class AppErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, message: '' };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, message: error?.message || 'Unexpected application error.' };
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex-center-screen">
+          <div className="callback-error-card">
+            <h2>Something went wrong</h2>
+            <p>{this.state.message}</p>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="btn-action primary"
+            >
+              Reload Page
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 function HomeRoute() {
   const { isAuthenticated, loading } = useAuth();
@@ -147,6 +180,9 @@ function AppLayout() {
 }
 
 function App() {
+  const [googleClientId, setGoogleClientId] = useState(BUILD_GOOGLE_CLIENT_ID);
+  const [configLoaded, setConfigLoaded] = useState(Boolean(BUILD_GOOGLE_CLIENT_ID));
+
   useEffect(() => {
     initAudioUnlock();
 
@@ -162,20 +198,52 @@ function App() {
     return undefined;
   }, []);
 
+  useEffect(() => {
+    if (BUILD_GOOGLE_CLIENT_ID) return;
+    let active = true;
+    api
+      .get('/api/health/')
+      .then((res) => {
+        if (!active) return;
+        const runtimeId = res.data?.google_client_id || '';
+        if (runtimeId) setGoogleClientId(runtimeId);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (active) setConfigLoaded(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  if (!configLoaded) {
+    return (
+      <div className="flex-center-screen">
+        <div className="loading-spinner-wrapper">
+          <Loader2 className="spinner-icon animate-spin" size={36} />
+          <p>Loading Personal AI...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
-    <GoogleOAuthProvider clientId={GOOGLE_CLIENT_ID}>
-      <AuthProvider>
-        <ThemeProvider>
-          <ToastProvider>
-            <PWAInstallProvider>
-              <BrowserRouter>
-                <AppLayout />
-              </BrowserRouter>
-            </PWAInstallProvider>
-          </ToastProvider>
-        </ThemeProvider>
-      </AuthProvider>
-    </GoogleOAuthProvider>
+    <AppErrorBoundary>
+      <GoogleOAuthProvider clientId={googleClientId || 'unconfigured'}>
+        <AuthProvider>
+          <ThemeProvider>
+            <ToastProvider>
+              <PWAInstallProvider>
+                <BrowserRouter>
+                  <AppLayout />
+                </BrowserRouter>
+              </PWAInstallProvider>
+            </ToastProvider>
+          </ThemeProvider>
+        </AuthProvider>
+      </GoogleOAuthProvider>
+    </AppErrorBoundary>
   );
 }
 

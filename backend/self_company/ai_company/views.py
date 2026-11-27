@@ -1,6 +1,7 @@
 import logging
 import os
 from datetime import timedelta
+from django.conf import settings as django_settings
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.core.files.base import ContentFile
@@ -1084,6 +1085,7 @@ class HealthCheckView(APIView):
         return Response({
             'status': 'healthy',
             'service': 'personal-ai-backend',
+            'google_client_id': django_settings.GOOGLE_CLIENT_ID or '',
         }, status=status.HTTP_200_OK)
 
 
