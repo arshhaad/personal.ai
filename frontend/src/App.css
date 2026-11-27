@@ -14,6 +14,7 @@
 /* --- Root & Layout Containers --- */
 .app-layout {
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -24,6 +25,7 @@
 /* --- Application Layout Modes --- */
 .app-layout {
   min-height: 100vh;
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -31,14 +33,16 @@
   color: #FFFFFF;
 }
 
-/* Chat mode: Fixed 100vh viewport with internal chat message scrolling */
+/* Chat mode: Fixed dynamic viewport with internal chat message scrolling */
 .app-layout.app-chat-mode {
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
 }
 
 .app-main-content.app-chat-main {
   height: 100vh;
+  height: 100dvh;
   overflow: hidden;
   padding: 0;
   margin: 0;
@@ -47,7 +51,9 @@
 /* Scrollable mode: Full-page natural scrolling for Personalization, Profile, Settings, etc. */
 .app-layout.app-scrollable-mode {
   min-height: 100vh;
+  min-height: 100dvh;
   height: 100vh;
+  height: 100dvh;
   overflow-y: auto;
   overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
@@ -11432,6 +11438,101 @@ html, body {
 
   .dropdown-menu-item {
     min-height: 42px;
+  }
+}
+
+/* ==========================================================================
+   CROSS-DEVICE RESPONSIVE SAFEGUARDS (TABLET, MOBILE & SAFE AREAS)
+   ========================================================================== */
+.chat-layout,
+.chat-main-container {
+  height: 100vh;
+  height: 100dvh;
+}
+
+.chat-message-content pre,
+.markdown-body pre {
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.chat-message-content table,
+.markdown-body table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.chat-message-content,
+.markdown-body {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+@media (max-width: 1024px) {
+  .chat-sidebar {
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  .page-container,
+  .settings-container,
+  .profile-container,
+  .personalization-container,
+  .integrations-page-container {
+    max-width: 100%;
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+}
+
+@media (max-width: 768px) {
+  .chat-topbar {
+    padding-top: max(8px, env(safe-area-inset-top));
+  }
+
+  .chat-input-wrapper,
+  .chat-input-container {
+    padding-bottom: max(10px, env(safe-area-inset-bottom));
+  }
+
+  .toast-container {
+    left: 12px;
+    right: 12px;
+    top: max(12px, env(safe-area-inset-top));
+    max-width: calc(100vw - 24px);
+  }
+
+  .toast-item {
+    width: 100%;
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 480px) {
+  .page-container,
+  .settings-container,
+  .profile-container,
+  .personalization-container,
+  .integrations-page-container {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .login-card,
+  .auth-card,
+  .auth-hero-card {
+    padding: 20px 14px;
+    border-radius: 14px;
+  }
+
+  .custom-google-btn {
+    width: 100%;
+    min-height: 44px;
+    justify-content: center;
   }
 }
 
