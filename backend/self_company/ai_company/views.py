@@ -240,6 +240,26 @@ class GoogleDriveStatusView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
+class GoogleDriveAuthUrlView(APIView):
+    """
+    Stage B: Generate Google Drive OAuth URL with offline access and login_hint
+    matching the signed-in user's Google account.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .services import generate_drive_auth_url
+
+        default_cb = os.getenv('FRONTEND_URL', 'http://localhost:5173').rstrip('/') + '/settings'
+        redirect_uri = request.query_params.get('redirect_uri', default_cb)
+        google_account = getattr(request.user, 'google_account', None)
+        login_hint = (google_account.email if google_account and google_account.email else '') or request.user.email or None
+
+        url, state = generate_drive_auth_url(redirect_uri=redirect_uri, login_hint=login_hint)
+        request.session['drive_oauth_state'] = state
+        return Response({'url': url, 'state': state}, status=status.HTTP_200_OK)
+
+
 class GoogleDriveConnectView(APIView):
     """
     Step 2: Connect Google Drive with the explicit scope:
@@ -273,19 +293,44 @@ class GoogleDriveConnectView(APIView):
                 scope = GOOGLE_DRIVE_SCOPE
 
             user_info = fetch_drive_user_info(access_token) if access_token else {}
+            drive_sub = (user_info.get('sub') or '').strip()
             drive_email = (user_info.get('email') or '').strip()
 
+            google_account = getattr(request.user, 'google_account', None)
+            profile = getattr(request.user, 'profile', None)
+            expected_sub = (
+                (google_account.google_id if google_account else None)
+                or (profile.google_id if profile else None)
+            )
+            expected_email = (
+                (google_account.email if google_account else None)
+                or request.user.email
+            )
+
+            if expected_sub and drive_sub and drive_sub != expected_sub:
+                return Response(
+                    {
+                        'error': (
+                            f"Google account mismatch. Please connect Google Drive using your signed-in account "
+                            f"({expected_email or request.user.username})."
+                        ),
+                        'code': 'account_mismatch',
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
             if (
-                request.user.email
+                expected_email
                 and drive_email
-                and drive_email.lower() != request.user.email.strip().lower()
+                and drive_email.lower() != expected_email.strip().lower()
             ):
                 return Response(
                     {
                         'error': (
-                            f"Please connect Google Drive using your signed-in account ({request.user.email}) "
+                            f"Please connect Google Drive using your signed-in account ({expected_email}) "
                             f"instead of {drive_email}."
-                        )
+                        ),
+                        'code': 'account_mismatch',
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
@@ -296,7 +341,7 @@ class GoogleDriveConnectView(APIView):
                 integration.refresh_token = refresh_token
             integration.token_expiry = timezone.now() + timedelta(seconds=expires_in)
             integration.scope = scope
-            integration.drive_email = drive_email or request.user.email
+            integration.drive_email = drive_email or expected_email
             integration.drive_display_name = user_info.get('display_name') or request.user.get_full_name() or request.user.username
             integration.connected_at = timezone.now()
             integration.save()
@@ -304,6 +349,7 @@ class GoogleDriveConnectView(APIView):
             from .models import sync_google_account
             sync_google_account(
                 request.user,
+                google_id=drive_sub or expected_sub,
                 email=integration.drive_email,
                 refresh_token=refresh_token,
                 is_connected=True,

@@ -4,14 +4,10 @@ import { useAuth } from '../../context/useAuth';
 import { useToast } from '../../context/useToast';
 import { Loader2, AlertCircle } from 'lucide-react';
 
-const LOGIN_WORKSPACE_SCOPES = [
+const LOGIN_SCOPES = [
   'openid',
   'email',
   'profile',
-  'https://www.googleapis.com/auth/drive.file',
-  'https://www.googleapis.com/auth/calendar.events',
-  'https://www.googleapis.com/auth/gmail.readonly',
-  'https://www.googleapis.com/auth/gmail.send',
 ].join(' ');
 
 export default function GoogleLoginButton({ onSuccess }) {
@@ -23,8 +19,9 @@ export default function GoogleLoginButton({ onSuccess }) {
   const triggerCodeLogin = useGoogleLogin({
     flow: 'auth-code',
     ux_mode: 'popup',
-    scope: LOGIN_WORKSPACE_SCOPES,
-    include_granted_scopes: true,
+    scope: LOGIN_SCOPES,
+    include_granted_scopes: false,
+    select_account: true,
     onSuccess: async (codeResponse) => {
       setLoading(true);
       setErrorMessage(null);

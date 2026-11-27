@@ -143,20 +143,30 @@ def ensure_valid_drive_token(integration):
 
 def fetch_drive_user_info(access_token):
     """
-    Fetch connected Google Drive account profile details.
+    Fetch connected Google Drive account profile details including OIDC sub.
     """
-    about_url = "https://www.googleapis.com/drive/v3/about?fields=user"
+    info = {}
     headers = {"Authorization": f"Bearer {access_token}"}
+
+    userinfo_res = requests.get("https://www.googleapis.com/oauth2/v3/userinfo", headers=headers, timeout=10)
+    if userinfo_res.ok:
+        oid_data = userinfo_res.json()
+        info['sub'] = oid_data.get('sub', '')
+        info['email'] = oid_data.get('email', '')
+        info['display_name'] = oid_data.get('name', '')
+        info['photo_link'] = oid_data.get('picture', '')
+
+    about_url = "https://www.googleapis.com/drive/v3/about?fields=user"
     response = requests.get(about_url, headers=headers, timeout=10)
     if response.ok:
         data = response.json()
         user_info = data.get('user', {})
-        return {
-            'email': user_info.get('emailAddress', ''),
-            'display_name': user_info.get('displayName', ''),
-            'photo_link': user_info.get('photoLink', ''),
-        }
-    return {}
+        info.setdefault('sub', '')
+        info['email'] = info.get('email') or user_info.get('emailAddress', '')
+        info['display_name'] = info.get('display_name') or user_info.get('displayName', '')
+        info['photo_link'] = info.get('photo_link') or user_info.get('photoLink', '')
+
+    return info
 
 
 def list_user_drive_files(access_token, page_size=30):

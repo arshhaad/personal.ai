@@ -1126,3 +1126,53 @@ class GoogleAccountAndDocumentModelTests(TestCase):
         )
         uploaded.delete()
         self.assertFalse(Document.objects.filter(pk=doc.id).exists())
+
+    def test_two_stage_google_oauth_urls_and_sub_mismatch_rejection(self):
+        from urllib.parse import urlparse, parse_qs
+        from .models import GoogleAccount, sync_google_account
+
+        # Stage A: Login URL only requests openid, email, profile
+        login_res = self.client.get('/api/auth/google/url/')
+        self.assertEqual(login_res.status_code, status.HTTP_200_OK)
+        login_qs = parse_qs(urlparse(login_res.data['url']).query)
+        self.assertEqual(login_qs['scope'][0], 'openid email profile')
+        self.assertEqual(login_qs['access_type'][0], 'online')
+        self.assertEqual(login_qs['include_granted_scopes'][0], 'false')
+        self.assertEqual(login_qs['prompt'][0], 'select_account')
+
+        # Stage B: Drive URL requests drive.file offline with login_hint
+        sync_google_account(
+            self.user,
+            google_id='expected-sub-123',
+            email='google_model@example.com',
+        )
+        self.client.force_authenticate(user=self.user)
+        drive_url_res = self.client.get('/api/drive/url/')
+        self.assertEqual(drive_url_res.status_code, status.HTTP_200_OK)
+        drive_qs = parse_qs(urlparse(drive_url_res.data['url']).query)
+        self.assertIn('https://www.googleapis.com/auth/drive.file', drive_qs['scope'][0])
+        self.assertEqual(drive_qs['access_type'][0], 'offline')
+        self.assertEqual(drive_qs['include_granted_scopes'][0], 'true')
+        self.assertEqual(drive_qs['prompt'][0], 'consent select_account')
+        self.assertEqual(drive_qs['login_hint'][0], 'google_model@example.com')
+
+        # Mismatched Google sub is rejected with account_mismatch
+        with patch('ai_company.views.fetch_drive_user_info', return_value={
+            'sub': 'wrong-sub-999',
+            'email': 'google_model@example.com',
+            'display_name': 'Wrong Identity',
+        }):
+            mismatch_res = self.client.post('/api/drive/connect/', {'access_token': 'tok-bad'}, format='json')
+        self.assertEqual(mismatch_res.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(mismatch_res.data.get('code'), 'account_mismatch')
+        self.assertFalse(GoogleAccount.objects.get(user=self.user).is_connected)
+
+        # Matching Google sub succeeds
+        with patch('ai_company.views.fetch_drive_user_info', return_value={
+            'sub': 'expected-sub-123',
+            'email': 'google_model@example.com',
+            'display_name': 'Right Identity',
+        }):
+            ok_res = self.client.post('/api/drive/connect/', {'access_token': 'tok-good'}, format='json')
+        self.assertEqual(ok_res.status_code, status.HTTP_200_OK)
+        self.assertTrue(GoogleAccount.objects.get(user=self.user).is_connected)

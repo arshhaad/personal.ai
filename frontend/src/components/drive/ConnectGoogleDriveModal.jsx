@@ -28,10 +28,10 @@ export default function ConnectGoogleDriveModal({
     'Allow Personal Assistant AI to create and manage files that you select or create with this application.';
 
   const triggerDriveLogin = useGoogleLogin({
-    scope: 'https://www.googleapis.com/auth/drive.file',
+    scope: 'openid email profile https://www.googleapis.com/auth/drive.file',
     flow: 'auth-code',
     hint: user?.email || undefined,
-    select_account: false,
+    prompt: 'consent select_account',
     include_granted_scopes: true,
     onSuccess: async (codeResponse) => {
       setConnecting(true);

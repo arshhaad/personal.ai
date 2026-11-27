@@ -19,18 +19,25 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
-GOOGLE_WORKSPACE_LOGIN_SCOPE = (
-    'openid email profile '
-    'https://www.googleapis.com/auth/drive.file '
-    'https://www.googleapis.com/auth/calendar.events '
-    'https://www.googleapis.com/auth/gmail.readonly '
-    'https://www.googleapis.com/auth/gmail.send'
-)
+# Stage A: Google Login only
+LOGIN_SCOPES = [
+    'openid',
+    'email',
+    'profile',
+]
+
+# Stage B: Google Drive connection
+DRIVE_SCOPES = [
+    'openid',
+    'email',
+    'profile',
+    'https://www.googleapis.com/auth/drive.file',
+]
 
 
 def generate_google_auth_url(redirect_uri, state=None):
     """
-    Generate Google OAuth 2.0 authorization URL and state.
+    Generate Stage A Google OAuth 2.0 authorization URL and state (login only).
     """
     if not state:
         state = secrets.token_urlsafe(32)
@@ -39,12 +46,37 @@ def generate_google_auth_url(redirect_uri, state=None):
         'client_id': settings.GOOGLE_CLIENT_ID,
         'redirect_uri': redirect_uri,
         'response_type': 'code',
-        'scope': GOOGLE_WORKSPACE_LOGIN_SCOPE,
-        'access_type': 'offline',
-        'include_granted_scopes': 'true',
+        'scope': ' '.join(LOGIN_SCOPES),
+        'access_type': 'online',
+        'include_granted_scopes': 'false',
         'prompt': 'select_account',
         'state': state,
     }
+    base_url = "https://accounts.google.com/o/oauth2/v2/auth"
+    url = f"{base_url}?{urllib.parse.urlencode(params)}"
+    return url, state
+
+
+def generate_drive_auth_url(redirect_uri, login_hint=None, state=None):
+    """
+    Generate Stage B Google OAuth 2.0 authorization URL for connecting Google Drive.
+    """
+    if not state:
+        state = secrets.token_urlsafe(32)
+
+    params = {
+        'client_id': settings.GOOGLE_CLIENT_ID,
+        'redirect_uri': redirect_uri,
+        'response_type': 'code',
+        'scope': ' '.join(DRIVE_SCOPES),
+        'access_type': 'offline',
+        'include_granted_scopes': 'true',
+        'prompt': 'consent select_account',
+        'state': state,
+    }
+    if login_hint:
+        params['login_hint'] = login_hint
+
     base_url = "https://accounts.google.com/o/oauth2/v2/auth"
     url = f"{base_url}?{urllib.parse.urlencode(params)}"
     return url, state

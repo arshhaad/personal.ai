@@ -5,6 +5,7 @@ from .views import (
     GoogleCallbackView,
     GoogleAuthView,
     GoogleDriveStatusView,
+    GoogleDriveAuthUrlView,
     GoogleDriveConnectView,
     GoogleDriveDisconnectView,
     GoogleDriveFilesView,
@@ -68,6 +69,7 @@ urlpatterns = [
 
     # Step 2: Google Drive Integration endpoints
     path('drive/status/', GoogleDriveStatusView.as_view(), name='google_drive_status'),
+    path('drive/url/', GoogleDriveAuthUrlView.as_view(), name='google_drive_url'),
     path('drive/connect/', GoogleDriveConnectView.as_view(), name='google_drive_connect'),
     path('drive/disconnect/', GoogleDriveDisconnectView.as_view(), name='google_drive_disconnect'),
     path('drive/files/', GoogleDriveFilesView.as_view(), name='google_drive_files'),
