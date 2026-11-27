@@ -737,7 +737,12 @@ class AdvancedIntegrationsTests(TestCase):
             'access_token': 'login_ws_access',
             'refresh_token': 'login_ws_refresh',
             'expires_in': 3600,
-            'scope': 'openid email profile https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/gmail.readonly',
+            'scope': (
+                'openid email profile '
+                'https://www.googleapis.com/auth/drive.file '
+                'https://www.googleapis.com/auth/calendar.events '
+                'https://www.googleapis.com/auth/gmail.readonly'
+            ),
         }
         mock_fetch_user.return_value = {
             'sub': 'google_ws_123',
@@ -749,6 +754,8 @@ class AdvancedIntegrationsTests(TestCase):
         res = unauth_client.post('/api/auth/google/', {'code': 'auth_code_with_ws'}, format='json')
         self.assertEqual(res.status_code, status.HTTP_200_OK)
         ws_user = User.objects.get(email='singleacct@personalai.app')
+        self.assertTrue(ws_user.google_drive.is_connected)
+        self.assertEqual(ws_user.google_drive.drive_email, 'singleacct@personalai.app')
         self.assertTrue(ws_user.google_calendar.is_connected)
         self.assertEqual(ws_user.google_calendar.calendar_email, 'singleacct@personalai.app')
         self.assertTrue(ws_user.gmail_integration.is_connected)

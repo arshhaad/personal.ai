@@ -9,12 +9,18 @@ from django.utils import timezone
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 from rest_framework_simplejwt.tokens import RefreshToken
-from .models import UserProfile, GoogleCalendarIntegration, GmailIntegration
+from .models import (
+    UserProfile,
+    GoogleDriveIntegration,
+    GoogleCalendarIntegration,
+    GmailIntegration,
+)
 
 logger = logging.getLogger(__name__)
 
 GOOGLE_WORKSPACE_LOGIN_SCOPE = (
     'openid email profile '
+    'https://www.googleapis.com/auth/drive.file '
     'https://www.googleapis.com/auth/calendar.events '
     'https://www.googleapis.com/auth/gmail.readonly '
     'https://www.googleapis.com/auth/gmail.send'
@@ -194,6 +200,19 @@ def authenticate_google_user(google_user_info):
         refresh_tok = oauth_tokens.get('refresh_token', '')
         now = timezone.now()
         full_name = f"{user.first_name} {user.last_name}".strip() or user.username
+
+        if 'drive' in scope_lower:
+            drive, _ = GoogleDriveIntegration.objects.get_or_create(user=user)
+            drive.is_connected = True
+            drive.access_token = oauth_access
+            if refresh_tok:
+                drive.refresh_token = refresh_tok
+            drive.token_expiry = now + timedelta(seconds=expires_in)
+            drive.scope = granted_scope
+            drive.drive_email = email
+            drive.drive_display_name = full_name
+            drive.connected_at = now
+            drive.save()
 
         if 'calendar' in scope_lower:
             cal, _ = GoogleCalendarIntegration.objects.get_or_create(user=user)

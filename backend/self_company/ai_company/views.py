@@ -270,6 +270,22 @@ class GoogleDriveConnectView(APIView):
                 scope = GOOGLE_DRIVE_SCOPE
 
             user_info = fetch_drive_user_info(access_token) if access_token else {}
+            drive_email = (user_info.get('email') or '').strip()
+
+            if (
+                request.user.email
+                and drive_email
+                and drive_email.lower() != request.user.email.strip().lower()
+            ):
+                return Response(
+                    {
+                        'error': (
+                            f"Please connect Google Drive using your signed-in account ({request.user.email}) "
+                            f"instead of {drive_email}."
+                        )
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             integration.is_connected = True
             integration.access_token = access_token or ''
@@ -277,7 +293,7 @@ class GoogleDriveConnectView(APIView):
                 integration.refresh_token = refresh_token
             integration.token_expiry = timezone.now() + timedelta(seconds=expires_in)
             integration.scope = scope
-            integration.drive_email = user_info.get('email') or request.user.email
+            integration.drive_email = drive_email or request.user.email
             integration.drive_display_name = user_info.get('display_name') or request.user.get_full_name() or request.user.username
             integration.connected_at = timezone.now()
             integration.save()
