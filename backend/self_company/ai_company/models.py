@@ -1,8 +1,39 @@
+import base64
+import hashlib
 import os
+from cryptography.fernet import Fernet, InvalidToken
+from django.conf import settings
 from django.db import models
 from django.contrib.auth.models import User
 from django.db.models.signals import post_save
 from django.dispatch import receiver
+
+
+def _get_token_fernet():
+    """Return a Fernet instance keyed from GOOGLE_TOKEN_ENCRYPTION_KEY or SECRET_KEY."""
+    configured_key = getattr(settings, 'GOOGLE_TOKEN_ENCRYPTION_KEY', None)
+    if configured_key:
+        key_bytes = configured_key.encode() if isinstance(configured_key, str) else configured_key
+        return Fernet(key_bytes)
+    digest = hashlib.sha256(settings.SECRET_KEY.encode('utf-8')).digest()
+    return Fernet(base64.urlsafe_b64encode(digest))
+
+
+def encrypt_token(raw_token):
+    """Encrypt a plaintext OAuth token for storage."""
+    if not raw_token:
+        return ''
+    return _get_token_fernet().encrypt(raw_token.encode('utf-8')).decode('utf-8')
+
+
+def decrypt_token(encrypted_token):
+    """Decrypt a stored OAuth token, returning empty string if invalid or empty."""
+    if not encrypted_token:
+        return ''
+    try:
+        return _get_token_fernet().decrypt(encrypted_token.encode('utf-8')).decode('utf-8')
+    except (InvalidToken, ValueError, TypeError):
+        return ''
 
 
 class UserProfile(models.Model):
@@ -17,6 +48,76 @@ class UserProfile(models.Model):
 
     def __str__(self):
         return f"{self.user.email or self.user.username}'s Profile"
+
+
+class GoogleAccount(models.Model):
+    """Stores a user's connected Google identity and encrypted OAuth refresh token."""
+    id = models.BigAutoField(primary_key=True)
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='google_account')
+    google_id = models.CharField(max_length=255, unique=True, null=True, blank=True)
+    email = models.EmailField(blank=True, default='')
+    refresh_token = models.TextField(blank=True, default='')
+    is_connected = models.BooleanField(default=False)
+    connected_at = models.DateTimeField(null=True, blank=True)
+
+    def set_refresh_token(self, raw_token):
+        """Encrypt and assign the refresh token."""
+        self.refresh_token = encrypt_token(raw_token)
+
+    def get_refresh_token(self):
+        """Decrypt and return the stored refresh token."""
+        return decrypt_token(self.refresh_token)
+
+    def __str__(self):
+        status = 'Connected' if self.is_connected else 'Disconnected'
+        return f"{self.email or self.user.username} ({status})"
+
+
+def sync_google_account(
+    user,
+    *,
+    google_id=None,
+    email='',
+    refresh_token='',
+    clear_refresh_token=False,
+    is_connected=None,
+    connected_at=None,
+    clear_connected_at=False,
+):
+    """Create or update a user's GoogleAccount record with encrypted token handling."""
+    account, _ = GoogleAccount.objects.get_or_create(user=user)
+    if google_id and account.google_id != google_id:
+        account.google_id = google_id
+    if email:
+        account.email = email
+    if clear_refresh_token:
+        account.refresh_token = ''
+    elif refresh_token:
+        account.set_refresh_token(refresh_token)
+    if is_connected is not None:
+        account.is_connected = is_connected
+    if clear_connected_at:
+        account.connected_at = None
+    elif connected_at is not None:
+        account.connected_at = connected_at
+    account.save()
+    return account
+
+
+class Document(models.Model):
+    """Tracks user documents and their associated Google Drive file metadata."""
+    id = models.BigAutoField(primary_key=True)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='drive_documents')
+    google_file_id = models.CharField(max_length=255, blank=True, default='', db_index=True)
+    file_name = models.CharField(max_length=255)
+    mime_type = models.CharField(max_length=150, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.file_name} ({self.user.username})"
 
 
 class GoogleDriveIntegration(models.Model):
@@ -203,6 +304,10 @@ class UploadedDocument(models.Model):
                 os.remove(self.file.path)
             except OSError:
                 pass
+        if self.drive_file_id:
+            Document.objects.filter(user=self.user, google_file_id=self.drive_file_id).delete()
+        else:
+            Document.objects.filter(user=self.user, google_file_id='', file_name=self.original_name).delete()
         super().delete(*args, **kwargs)
 
 

@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 from .models import (
     UserProfile,
+    GoogleAccount,
+    Document,
     GoogleDriveIntegration,
     GoogleCalendarIntegration,
     GmailIntegration,
@@ -299,6 +301,15 @@ class GoogleDriveConnectView(APIView):
             integration.connected_at = timezone.now()
             integration.save()
 
+            from .models import sync_google_account
+            sync_google_account(
+                request.user,
+                email=integration.drive_email,
+                refresh_token=refresh_token,
+                is_connected=True,
+                connected_at=integration.connected_at,
+            )
+
             return Response({
                 'message': 'Google Drive connected successfully.',
                 'permission': PERMISSION_DESCRIPTION,
@@ -328,6 +339,14 @@ class GoogleDriveDisconnectView(APIView):
         integration.token_expiry = None
         integration.connected_at = None
         integration.save()
+
+        from .models import sync_google_account
+        sync_google_account(
+            request.user,
+            clear_refresh_token=True,
+            is_connected=False,
+            clear_connected_at=True,
+        )
 
         return Response({
             'message': 'Google Drive disconnected successfully.',
@@ -397,6 +416,12 @@ class GoogleDriveImportView(APIView):
                 status='uploaded'
             )
             doc.file.save(final_name, ContentFile(content_bytes), save=True)
+            Document.objects.create(
+                user=request.user,
+                google_file_id=file_id,
+                file_name=final_name,
+                mime_type=resolved_mime or mime_type or '',
+            )
 
             # Process document text for AI knowledge base
             process_document(doc)
@@ -614,6 +639,19 @@ class DocumentListUploadView(APIView):
                                 doc.save(update_fields=['drive_file_id', 'drive_web_link'])
                     except Exception as drive_err:
                         logger.warning(f"Failed to sync uploaded file '{file_obj.name}' to Google Drive: {drive_err}")
+
+                mime_mapping = {
+                    'pdf': 'application/pdf',
+                    'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    'txt': 'text/plain',
+                    'md': 'text/markdown',
+                }
+                Document.objects.create(
+                    user=request.user,
+                    google_file_id=doc.drive_file_id or '',
+                    file_name=doc.original_name,
+                    mime_type=getattr(file_obj, 'content_type', '') or mime_mapping.get(ext, ''),
+                )
 
                 # Run extraction synchronously (or queue in background)
                 process_document(doc)

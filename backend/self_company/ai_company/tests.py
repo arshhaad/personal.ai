@@ -1031,3 +1031,98 @@ class MessageEditTests(TestCase):
         self.client.force_authenticate(user=self.other_user)
         forbidden = self.client.patch(f'/api/conversations/{conv.id}/messages/{u1.id}/', {'content': 'Steal'}, format='json')
         self.assertEqual(forbidden.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class GoogleAccountAndDocumentModelTests(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username='google_model_user',
+            email='google_model@example.com',
+            password='TestPassword123!'
+        )
+        self.other_user = User.objects.create_user(
+            username='other_google_model_user',
+            email='other_google_model@example.com',
+            password='TestPassword123!'
+        )
+
+    def test_google_account_encrypted_refresh_token_and_unique_google_id(self):
+        from django.db import IntegrityError
+        from django.utils import timezone
+        from .models import GoogleAccount, sync_google_account
+
+        now = timezone.now()
+        account = sync_google_account(
+            self.user,
+            google_id='google-uid-12345',
+            email='google_model@example.com',
+            refresh_token='1//0g_secret_refresh_token',
+            is_connected=True,
+            connected_at=now,
+        )
+
+        self.assertIsNotNone(account.id)
+        self.assertEqual(account.user, self.user)
+        self.assertEqual(account.google_id, 'google-uid-12345')
+        self.assertEqual(account.email, 'google_model@example.com')
+        self.assertTrue(account.is_connected)
+        self.assertEqual(account.connected_at, now)
+        self.assertNotEqual(account.refresh_token, '1//0g_secret_refresh_token')
+        self.assertEqual(account.get_refresh_token(), '1//0g_secret_refresh_token')
+
+        with self.assertRaises(IntegrityError):
+            GoogleAccount.objects.create(
+                user=self.other_user,
+                google_id='google-uid-12345',
+                email='other@example.com',
+            )
+
+    def test_drive_disconnect_syncs_google_account(self):
+        from django.utils import timezone
+        from .models import GoogleAccount, sync_google_account
+
+        sync_google_account(
+            self.user,
+            google_id='google-uid-999',
+            email='google_model@example.com',
+            refresh_token='1//0g_disconnect_token',
+            is_connected=True,
+            connected_at=timezone.now(),
+        )
+        self.client.force_authenticate(user=self.user)
+        res = self.client.post('/api/drive/disconnect/')
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+        account = GoogleAccount.objects.get(user=self.user)
+        self.assertFalse(account.is_connected)
+        self.assertEqual(account.refresh_token, '')
+        self.assertEqual(account.get_refresh_token(), '')
+        self.assertIsNone(account.connected_at)
+
+    def test_document_model_and_uploaded_document_delete_sync(self):
+        from .models import Document, UploadedDocument
+
+        doc = Document.objects.create(
+            user=self.user,
+            google_file_id='drive-file-abc',
+            file_name='report.pdf',
+            mime_type='application/pdf',
+        )
+        self.assertIsNotNone(doc.id)
+        self.assertEqual(doc.user, self.user)
+        self.assertEqual(doc.google_file_id, 'drive-file-abc')
+        self.assertEqual(doc.file_name, 'report.pdf')
+        self.assertEqual(doc.mime_type, 'application/pdf')
+        self.assertIsNotNone(doc.created_at)
+
+        uploaded = UploadedDocument.objects.create(
+            user=self.user,
+            original_name='report.pdf',
+            file_type='pdf',
+            file_size=123,
+            drive_file_id='drive-file-abc',
+            status='uploaded',
+        )
+        uploaded.delete()
+        self.assertFalse(Document.objects.filter(pk=doc.id).exists())

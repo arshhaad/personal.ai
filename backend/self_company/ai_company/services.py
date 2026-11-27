@@ -11,6 +11,7 @@ from google.auth.transport import requests as google_requests
 from rest_framework_simplejwt.tokens import RefreshToken
 from .models import (
     UserProfile,
+    GoogleAccount,
     GoogleDriveIntegration,
     GoogleCalendarIntegration,
     GmailIntegration,
@@ -191,14 +192,22 @@ def authenticate_google_user(google_user_info):
     if profile_updated:
         profile.save()
 
+    from .models import sync_google_account
     oauth_tokens = google_user_info.get('_oauth_tokens') or {}
     oauth_access = oauth_tokens.get('access_token')
+    oauth_refresh = oauth_tokens.get('refresh_token', '')
+    now = timezone.now()
+    sync_google_account(
+        user,
+        google_id=google_id,
+        email=email,
+        refresh_token=oauth_refresh,
+    )
     if oauth_access:
         granted_scope = str(oauth_tokens.get('scope') or '')
         scope_lower = granted_scope.lower()
         expires_in = int(oauth_tokens.get('expires_in') or 3600)
-        refresh_tok = oauth_tokens.get('refresh_token', '')
-        now = timezone.now()
+        refresh_tok = oauth_refresh
         full_name = f"{user.first_name} {user.last_name}".strip() or user.username
 
         if 'drive' in scope_lower:
@@ -213,6 +222,14 @@ def authenticate_google_user(google_user_info):
             drive.drive_display_name = full_name
             drive.connected_at = now
             drive.save()
+            sync_google_account(
+                user,
+                google_id=google_id,
+                email=email,
+                refresh_token=refresh_tok,
+                is_connected=True,
+                connected_at=now,
+            )
 
         if 'calendar' in scope_lower:
             cal, _ = GoogleCalendarIntegration.objects.get_or_create(user=user)

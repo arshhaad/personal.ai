@@ -1,6 +1,8 @@
 from django.contrib import admin
 from .models import (
     UserProfile,
+    GoogleAccount,
+    Document,
     UserAIPreferences,
     PersonalInformation,
     UploadedDocument,
@@ -15,6 +17,21 @@ from .models import (
 class UserProfileAdmin(admin.ModelAdmin):
     list_display = ('user', 'preferred_name', 'phone_number', 'login_provider', 'google_id', 'created_at')
     search_fields = ('user__username', 'user__email', 'preferred_name', 'google_id')
+
+
+@admin.register(GoogleAccount)
+class GoogleAccountAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'google_id', 'email', 'is_connected', 'connected_at')
+    list_filter = ('is_connected', 'connected_at')
+    search_fields = ('user__username', 'user__email', 'email', 'google_id')
+    readonly_fields = ('refresh_token',)
+
+
+@admin.register(Document)
+class DocumentAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'file_name', 'mime_type', 'google_file_id', 'created_at')
+    list_filter = ('mime_type', 'created_at')
+    search_fields = ('file_name', 'google_file_id', 'user__username', 'user__email')
 
 
 @admin.register(UserAIPreferences)
