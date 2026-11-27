@@ -181,7 +181,7 @@ function AppLayout() {
 
 function App() {
   const [googleClientId, setGoogleClientId] = useState(BUILD_GOOGLE_CLIENT_ID);
-  const [configLoaded, setConfigLoaded] = useState(Boolean(BUILD_GOOGLE_CLIENT_ID));
+  const [configLoaded, setConfigLoaded] = useState(false);
 
   useEffect(() => {
     initAudioUnlock();
@@ -199,14 +199,15 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (BUILD_GOOGLE_CLIENT_ID) return;
     let active = true;
     api
       .get('/api/health/')
       .then((res) => {
         if (!active) return;
-        const runtimeId = res.data?.google_client_id || '';
-        if (runtimeId) setGoogleClientId(runtimeId);
+        const runtimeId = (res.data?.google_client_id || '').trim();
+        if (runtimeId) {
+          setGoogleClientId(runtimeId);
+        }
       })
       .catch(() => {})
       .finally(() => {
@@ -230,7 +231,7 @@ function App() {
 
   return (
     <AppErrorBoundary>
-      <GoogleOAuthProvider clientId={googleClientId || 'unconfigured'}>
+      <GoogleOAuthProvider key={googleClientId || 'unconfigured'} clientId={googleClientId || 'unconfigured'}>
         <AuthProvider>
           <ThemeProvider>
             <ToastProvider>
